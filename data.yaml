@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 6
+names: ['Bangles', 'Chain', 'Earrings', 'Gold Bar', 'Gold Coin', 'Ring']
+
+roboflow:
+  workspace: sih-j6v8c
+  project: gold-detection-arshz
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/sih-j6v8c/gold-detection-arshz/dataset/1
