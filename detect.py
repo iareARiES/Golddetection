@@ -1,137 +1,119 @@
-"""
-Simple YOLO detection script.
-
-Simple webcam detection with Gold.pt. Runs on camera index 0, shows labels and
-confidence scores, and prints detections to the console. Saving is off by
-default for webcam.
-"""
-
-from pathlib import Path
-from datetime import datetime
-import time
-
+from ultralytics import YOLO
 import cv2
+from pathlib import Path
+import time
+from datetime import datetime
 
-try:
-    from ultralytics import YOLO
-except ImportError as exc:  # pragma: no cover
-    raise SystemExit(
-        "ultralytics is required. Install with: pip install ultralytics"
-    ) from exc
+class GoldDetectorROI:
+    def __init__(self, model_path="best.pt", webcam_index=0, roi=(200, 100, 500, 400)):
+        """
+        Initialize the detector.
+        :param model_path: path to YOLO weights
+        :param webcam_index: webcam ID
+        :param roi: tuple of (x1, y1, x2, y2) defining the region of interest
+        """
+        self.model = YOLO(model_path)
+        self.cap = cv2.VideoCapture(webcam_index)
+        self.roi = roi  # ROI as (x1, y1, x2, y2)
+        
+        #Recording attributes
+        self.recording = False
+        self.writer = None
+        self.last_detection_time = 0
+        self.out_file = None
+        self.out_dir = Path("runs/recordings")
+        self.out_dir.mkdir(parents = True, exist_ok = True)
+        self.fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        
 
+    def crop_roi(self, frame):
+        """Crop the ROI from the frame."""
+        x1, y1, x2, y2 = self.roi
+        return frame[y1:y2, x1:x2] #returns the cropped frame
 
-def main() -> None:
-    weights_path = Path("Gold.pt")
-    if not weights_path.exists():
-        raise FileNotFoundError(f"Weights not found: {weights_path}")
+    def convert_to_full_coords(self, box):
+        """Convert ROI-relative box coordinates to full frame coordinates.""" 
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        roi_x1, roi_y1, _, _ = self.roi
+        x1 += roi_x1
+        x2 += roi_x1
+        y1 += roi_y1
+        y2 += roi_y1
+        return x1, y1, x2, y2
 
-    model = YOLO(str(weights_path))
+    def draw_roi_box(self, frame):
+        """Draw the ROI rectangle on the frame."""
+        x1, y1, x2, y2 = self.roi
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
 
-    # Fixed webcam source and simple defaults
-    source = 0  # webcam index
-    conf = 0.1
-    imgsz = 640
-    show = True
-    save = False  # off for webcam
+    def draw_detection(self, frame, coords, conf):
+        """Draw detection box and label on frame."""
+        x1, y1, x2, y2 = coords
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        label = f"Gold Detected {conf:.2f}"
+        cv2.putText(frame, label, (x1, y1 - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-    results = model.predict(
-        source=source,
-        conf=conf,
-        imgsz=imgsz,
-        stream=True,  # webcam streaming
-        show=False,  # manual display via cv2
-        save=False,  # manual recording
-        device=None,  # auto device
-    )
-
-    # Class names from the model (used for readable labels)
-    names = getattr(model, "names", None)
-    if names:
-        # Force all class labels to display as "Gold"
-        for k in names.keys():
-            names[k] = "Gold"
-
-    # Recording setup
-    recording = False
-    writer = None
-    out_file = None
-    out_dir = Path("runs/recordings")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    last_detection_time = 0  # timestamp of last detection
-
-    # Collect output directories from results (list or generator)
-    out_dirs = set()
-    for r in results:
-        current_time = time.time()
-        gold_detected = False
-
-        # Print detections with labels and confidence, especially for gold items
-        boxes = getattr(r, "boxes", None)
-        gold_detected = False
-        if boxes is not None and getattr(boxes, "cls", None) is not None:
-            cls_ids = boxes.cls.tolist()
-            confs = boxes.conf.tolist()
-            for cls_id, conf in zip(cls_ids, confs):
-                label = "Gold"
-                print(f"Detected {label} with confidence {conf:.2f}")
-                gold_detected = True
-                last_detection_time = current_time
-
-        # Get the original frame and manually draw boxes with "Gold" labels
-        frame = r.orig_img.copy()
-        if boxes is not None and len(boxes) > 0:
-            for box, conf in zip(boxes.xyxy.tolist(), boxes.conf.tolist()):
-                x1, y1, x2, y2 = map(int, box)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, f"Gold {conf:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
-        # Start recording if gold detected and not already recording
-        if gold_detected and not recording:
-            h, w = frame.shape[:2]
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            out_file = out_dir / f"gold_detected_{ts}.mp4"
-            writer = cv2.VideoWriter(str(out_file), fourcc, 20.0, (w, h))
-            recording = True
-            print(f"Recording started: {out_file}")
-
-        # Stop recording if no detection for 30 seconds
-        if recording and (current_time - last_detection_time) > 30:
-            if writer is not None:
-                writer.release()
-                writer = None
-                print(f"Recording stopped: {out_file}")
-            recording = False
-
-        # Add status text overlays
-        status1 = f"Gold Detected: {'Yes' if gold_detected else 'No'}"
-        status2 = f"Recording: {'On' if recording else 'Off'}"
-        cv2.putText(frame, status1, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(frame, status2, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-        if recording and writer is not None:
-            writer.write(frame)
-
-        if show:
-            cv2.imshow("Gold Detection", frame)
-            if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+    def run(self):
+        """Main loop for webcam capture, detection, display and recording."""
+        while True:
+            ret, frame = self.cap.read()
+            if not ret:
                 break
 
-        if hasattr(r, "save_dir") and r.save_dir:
-            out_dirs.add(Path(r.save_dir).resolve())
+            # Draw ROI
+            self.draw_roi_box(frame)
 
-    if writer is not None:
-        writer.release()
-        print(f"Recording stopped: {out_file}")
-    cv2.destroyAllWindows()
+            # Crop ROI for detection
+            roi_frame = self.crop_roi(frame)
 
-    if save and out_dirs:
-        print("\nDetections saved to:")
-        for d in sorted(out_dirs):
-            print(f"  {d}")
-    else:
-        print("\nWebcam mode finished.")
+            # Run YOLO only on ROI
+            results = self.model(roi_frame, conf=0.2)[0]
+
+            gold_detected = False
+            
+            # Process detections
+            for box in results.boxes:
+                coords = self.convert_to_full_coords(box)
+                conf = box.conf.item()
+                self.draw_detection(frame, coords, conf)
+                gold_detected = True
+            
+            #Handle recording
+            current_time = time.time()
+            if gold_detected:
+                self.last_detection_time = current_time
+                if not self.recording:
+                    h,w = frame.shape[:2] #takes the 2 elements height and width not the channels
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    self.out_file = self.out_dir / f"gold_detected_{ts}.mp4"
+                    self.writer = cv2.VideoWriter(str(self.out_file), self.fourcc, 20.0, (w,h))
+                    self.recording = True
+                    print(f"Recording started: {self.out_file}")
+           
+            #Closing the recorder
+            if self.recording  and (current_time - self.last_detection_time) > 30:
+                self.writer.release()
+                self.writer = None
+                self.recording = False                
+                print(f"Recording stopped: {self.out_file}")
+            
+            
+            #like taking the screen recording 
+            if self.recording and self.writer is not None:
+                self.writer.write(frame)
+                
+            # Display
+            cv2.imshow("Gold Detection (ROI)", frame)
+
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+
+        # Cleanup
+        self.cap.release()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    main()
+    detector = GoldDetectorROI(model_path="best.pt", roi=(200, 100, 500, 400))
+    detector.run()
