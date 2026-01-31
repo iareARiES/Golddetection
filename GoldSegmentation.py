@@ -1,9 +1,9 @@
-from torch import classes
 from ultralytics import YOLO
 import cv2
 from pathlib import Path
 import time
 from datetime import datetime
+import numpy as np
 
 
 
@@ -36,27 +36,27 @@ class YOLOSegmentation:
     def draw_detection(self,frame, coords, conf):
         x1,y1,x2,y2 = coords
         cv2.rectangle(frame, (x1,y1), (x2,y2), (0,255,0), 2)
-        label = f"Person {conf:2f}"
+        label = f"Person {conf:.2f}"
         cv2.putText(frame, label, (x1,y1-8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255),2)
             
-    def predict_and_draw(self, frame):
-        roi_frame = self.crop_roi(frame)
-        results = self.model(roi_frame, classes=self.classes, conf=0.2)[0]
-        
-        # This draws the **segmentation masks on the ROI**
-        annotated_roi = results.plot()  # <- this handles pixelated masks
-        
-        # Put the annotated ROI back into the original frame
+    def predict_and_draw(self, frame, results):
+        """
+        Draw segmentation results that are already computed.
+        """
+        annotated_roi = results.plot()
+
         x1, y1, x2, y2 = self.roi
         frame[y1:y2, x1:x2] = annotated_roi
-        
+
         return frame
+
+
 
 
 
 # ------------------- GOLD DETECTOR LAYER-------------------
 class GoldDetectorROI:
-    def __init__(self, model_path="best.pt", webcam_index=0, roi=None):
+    def __init__(self, model_path="best.pt", roi=None):
         """
         Initialize the detector.
         :param model_path: path to YOLO weights
@@ -64,7 +64,6 @@ class GoldDetectorROI:
         :param roi: tuple of (x1, y1, x2, y2) defining the region of interest
         """
         self.model = YOLO(model_path)
-        self.cap = cv2.VideoCapture(webcam_index)
         self.roi = roi  # ROI as (x1, y1, x2, y2)
         
         #Recording attributes
@@ -152,12 +151,50 @@ class MultiDetectorROI:
         self.roi = roi
         self.gold_detector = GoldDetectorROI(
             model_path=gold_model_path,
-            webcam_index=0,      # must be int
             roi=roi
         )
         self.seg_detector = YOLOSegmentation(yolo26_model_path, roi)
 
+    #overlap solution
+    def box_overlaps_mask(self, box_coords, person_masks, roi):
+        """
+        True overlap check using binary mask intersection.
+        """
+        if person_masks is None:
+            return False
 
+        x1, y1, x2, y2 = box_coords
+        roi_x1, roi_y1, roi_x2, roi_y2 = roi
+
+        roi_w = roi_x2 - roi_x1
+        roi_h = roi_y2 - roi_y1
+
+        # Create empty person mask image
+        person_binary = np.zeros((roi_h, roi_w), dtype=np.uint8)
+
+        # Draw each person contour
+        for mask_points in person_masks:
+            contour = np.array(mask_points, dtype=np.int32)
+            cv2.fillPoly(person_binary, [contour], 255)
+
+        # Create gold box mask (ROI-relative)
+        box_mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
+
+        bx1 = x1 - roi_x1
+        by1 = y1 - roi_y1
+        bx2 = x2 - roi_x1
+        by2 = y2 - roi_y1
+
+        cv2.rectangle(box_mask, (bx1, by1), (bx2, by2), 255, -1)
+
+        # Intersection
+        overlap = cv2.bitwise_and(person_binary, box_mask)
+
+        # If any overlap pixels exist → reject
+        return np.any(overlap)
+
+
+        
     def run(self):
         while True:
             ret, frame = self.cap.read()
@@ -168,12 +205,22 @@ class MultiDetectorROI:
             x1, y1, x2, y2 = self.roi
             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
 
-            # GOLD DETECTION + RECORDING
-            frame, gold_detected = self.gold_detector.predict_and_draw(frame)
-            self.gold_detector.handle_recording(frame, gold_detected)
+            # ---- SEGMENTATION ONCE ----
+            roi_frame = self.seg_detector.crop_roi(frame)
+            seg_results = self.seg_detector.model(
+                roi_frame,
+                classes=self.seg_detector.classes,
+                conf=0.2
+            )[0]
 
-            # YOLO26 SEGMENTATION
-            frame = self.seg_detector.predict_and_draw(frame)
+            person_masks = seg_results.masks.xy if seg_results.masks else None
+
+            # Draw segmentation
+            frame = self.seg_detector.predict_and_draw(frame, seg_results)
+
+            # ---- GOLD FILTERING ----
+            frame, gold_detected = self.detect_gold_filtered(frame, person_masks)
+            self.gold_detector.handle_recording(frame, gold_detected)
 
             cv2.imshow("Gold + YOLO26 Detection (ROI)", frame)
 
@@ -182,6 +229,30 @@ class MultiDetectorROI:
 
         self.cap.release()
         cv2.destroyAllWindows()
+
+
+    def detect_gold_filtered(self, frame, person_masks):
+        """
+        Run gold detection but filter out detections that overlap with person masks.
+        """
+        roi_frame = self.gold_detector.crop_roi(frame)
+        results = self.gold_detector.model(roi_frame, conf=0.2)[0]
+        
+        gold_detected = False
+        for box in results.boxes:
+            coords = self.gold_detector.convert_to_full_coords(box)
+            
+            # Check if this gold detection overlaps with any person
+            if self.box_overlaps_mask(coords, person_masks, self.roi):
+                continue  # Skip completely, draw nothing
+
+            
+            # Valid gold detection (not on person)
+            conf = box.conf.item()
+            self.gold_detector.draw_detection(frame, coords, conf)
+            gold_detected = True
+    
+        return frame, gold_detected
 
 # ------------------- RUN -------------------
 if __name__ == "__main__":
