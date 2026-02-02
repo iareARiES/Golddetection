@@ -40,25 +40,42 @@ class YOLOSegmentation:
         cv2.putText(frame, label, (x1,y1-8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255),2)
             
     def predict_and_draw(self, frame, results):
-        annotated_roi = results.plot()
-    
-    # Get ROI coordinates as ints
-        x1, y1, x2, y2 = map(int, self.roi)
-    
-    # Compute width and height correctly
-        width = x2 - x1
-        height = y2 - y1
-
-    # Resize annotated ROI to match ROI size
-        annotated_roi = cv2.resize(annotated_roi, (width, height))
-
-    # Make sure we don’t go out of frame bounds
-        height = min(height, frame.shape[0] - y1)
-        width = min(width, frame.shape[1] - x1)
-        annotated_roi = annotated_roi[:height, :width]
-
-    # Paste
-        frame[y1:y1+height, x1:x1+width] = annotated_roi
+        """
+        Draw segmentation results directly on the frame at correct ROI-offset positions.
+        No resizing or pasting - draws on original frame.
+        """
+        x1_roi, y1_roi, x2_roi, y2_roi = map(int, self.roi)
+        
+        # Draw masks if available
+        if results.masks is not None:
+            for mask_points in results.masks.xy:
+                # Offset mask points by ROI position
+                contour = np.array(mask_points, dtype=np.int32)
+                contour[:, 0] += x1_roi  # Offset X
+                contour[:, 1] += y1_roi  # Offset Y
+                
+                # Draw filled mask with transparency
+                overlay = frame.copy()
+                cv2.fillPoly(overlay, [contour], (0, 255, 0))
+                cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
+                
+                # Draw mask outline
+                cv2.polylines(frame, [contour], True, (0, 255, 0), 2)
+        
+        # Draw boxes if available
+        if results.boxes is not None:
+            for box in results.boxes:
+                bx1, by1, bx2, by2 = map(int, box.xyxy[0])
+                # Offset by ROI position
+                bx1 += x1_roi
+                bx2 += x1_roi
+                by1 += y1_roi
+                by2 += y1_roi
+                
+                conf = box.conf.item()
+                cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
+                label = f"Person {conf:.2f}"
+                cv2.putText(frame, label, (bx1, by1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         return frame
 
