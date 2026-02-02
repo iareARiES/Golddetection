@@ -6,6 +6,39 @@ from datetime import datetime
 import numpy as np
 
 
+def get_screen_resolution():
+    """
+    Auto-detect screen resolution. Works on Windows, Linux, and Raspberry Pi.
+    Returns (width, height) or None if detection fails.
+    """
+    # Method 1: Try tkinter (works on most systems)
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()  # Hide the window
+        width = root.winfo_screenwidth()
+        height = root.winfo_screenheight()
+        root.destroy()
+        return (width, height)
+    except:
+        pass
+    
+    # Method 2: Try xrandr on Linux/RPi
+    try:
+        import subprocess
+        output = subprocess.check_output(['xrandr']).decode('utf-8')
+        for line in output.split('\n'):
+            if '*' in line:  # Current resolution has asterisk
+                resolution = line.split()[0]
+                width, height = map(int, resolution.split('x'))
+                return (width, height)
+    except:
+        pass
+    
+    # Method 3: Fallback - return None to use camera resolution
+    return None
+
+
 
 
 # ------------------- YOLO26 SEGMENTATION -------------------
@@ -304,20 +337,25 @@ class MultiDetectorROI:
         # Determine target screen dimensions
         if self.screen_resolution:
             screen_width, screen_height = self.screen_resolution
+            print(f"Using manual screen resolution: {screen_width}x{screen_height}")
         else:
-            # Default to 1920x1080 for full HD
-            screen_width, screen_height = 1920, 1080
-        
-        print(f"Target screen: {screen_width}x{screen_height}")
+            # Auto-detect screen resolution
+            detected = get_screen_resolution()
+            if detected:
+                screen_width, screen_height = detected
+                print(f"Auto-detected screen resolution: {screen_width}x{screen_height}")
+            else:
+                # Fallback to camera resolution (no scaling)
+                screen_width, screen_height = cam_width, cam_height
+                print(f"Using camera resolution (no scaling): {screen_width}x{screen_height}")
         
         # Calculate scale factor to fit screen while maintaining aspect ratio
         scale_w = screen_width / cam_width
         scale_h = screen_height / cam_height
         scale = min(scale_w, scale_h)  # Use smaller to fit both dimensions
         
-        # Don't upscale more than 1.5x to avoid zoomed/blurry look
-        # Only downscale or minor upscale
-        scale = min(scale, 1.5)
+        # Don't upscale - only keep same size or downscale
+        scale = min(scale, 1.0)
         
         self.display_width = int(cam_width * scale)
         self.display_height = int(cam_height * scale)
@@ -415,10 +453,9 @@ if __name__ == "__main__":
     seg_x2 = 800
     seg_y2 = 800
     
-    # Set your screen resolution here (width, height)
-    # Common Raspberry Pi resolutions: (800, 480), (1024, 600), (1920, 1080)
-    # Set to None to use default 1920x1080 (fullscreen)
-    SCREEN_RESOLUTION = (1920, 1080)  # Change this to match your screen
+    # Screen resolution - set to None for auto-detection (recommended)
+    # Or manually set, e.g., (800, 480) for RPi 7" screen
+    SCREEN_RESOLUTION = None  # Auto-detect
     
     detector = MultiDetectorROI(
         gold_model_path="best.pt",
