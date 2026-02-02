@@ -299,25 +299,29 @@ class MultiDetectorROI:
             return
         
         cam_height, cam_width = first_frame.shape[:2]
+        print(f"Camera resolution: {cam_width}x{cam_height}")
         
         # Determine target screen dimensions
         if self.screen_resolution:
             screen_width, screen_height = self.screen_resolution
         else:
-            # Default to 800x600 for Raspberry Pi compatibility
-            # You can change this to match your screen
-            screen_width, screen_height = 800, 600
+            # Default to 1920x1080 for full HD
+            screen_width, screen_height = 1920, 1080
+        
+        print(f"Target screen: {screen_width}x{screen_height}")
         
         # Calculate scale factor to fit screen while maintaining aspect ratio
         scale_w = screen_width / cam_width
         scale_h = screen_height / cam_height
         scale = min(scale_w, scale_h)  # Use smaller to fit both dimensions
         
-        target_width = int(cam_width * scale)
-        target_height = int(cam_height * scale)
+        self.display_width = int(cam_width * scale)
+        self.display_height = int(cam_height * scale)
         
-        # Set window size
-        cv2.resizeWindow(window_name, target_width, target_height)
+        print(f"Display size: {self.display_width}x{self.display_height}")
+        
+        # Set window to fullscreen for best display on Raspberry Pi
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         
         # Process first frame (don't skip it)
         frame = first_frame
@@ -361,7 +365,7 @@ class MultiDetectorROI:
             frame = self.draw_status_panel(frame, gold_detected)
             
             # Resize frame to fit screen while maintaining aspect ratio
-            display_frame = self.resize_with_aspect_ratio(frame, target_width, target_height)
+            display_frame = self.resize_with_aspect_ratio(frame, self.display_width, self.display_height)
             
             cv2.imshow(window_name, display_frame)
 
@@ -409,8 +413,8 @@ if __name__ == "__main__":
     
     # Set your screen resolution here (width, height)
     # Common Raspberry Pi resolutions: (800, 480), (1024, 600), (1920, 1080)
-    # Set to None to use default 800x600
-    SCREEN_RESOLUTION = (800, 480)  # Change this to match your screen
+    # Set to None to use default 1920x1080 (fullscreen)
+    SCREEN_RESOLUTION = (1920, 1080)  # Change this to match your screen
     
     detector = MultiDetectorROI(
         gold_model_path="best.pt",
