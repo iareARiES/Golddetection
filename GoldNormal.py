@@ -315,13 +315,17 @@ class MultiDetectorROI:
         scale_h = screen_height / cam_height
         scale = min(scale_w, scale_h)  # Use smaller to fit both dimensions
         
+        # Don't upscale more than 1.5x to avoid zoomed/blurry look
+        # Only downscale or minor upscale
+        scale = min(scale, 1.5)
+        
         self.display_width = int(cam_width * scale)
         self.display_height = int(cam_height * scale)
         
-        print(f"Display size: {self.display_width}x{self.display_height}")
+        print(f"Display size: {self.display_width}x{self.display_height} (scale: {scale:.2f}x)")
         
-        # Set window to fullscreen for best display on Raspberry Pi
-        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        # Set window size (not fullscreen to avoid zoom issues)
+        cv2.resizeWindow(window_name, self.display_width, self.display_height)
         
         # Process first frame (don't skip it)
         frame = first_frame
