@@ -195,7 +195,69 @@ class MultiDetectorROI:
 
 
         
+    def resize_with_aspect_ratio(self, frame, target_width, target_height):
+        """
+        Resize frame to fit within target dimensions while maintaining aspect ratio.
+        """
+        h, w = frame.shape[:2]
+        
+        # Calculate scaling factor to fit within target dimensions
+        scale_w = target_width / w
+        scale_h = target_height / h
+        scale = min(scale_w, scale_h)  # Use smaller scale to fit both dimensions
+        
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        return resized
+    
+    def draw_status_panel(self, frame, gold_detected):
+        """
+        Draw status labels on the right side of the frame.
+        Shows: Gold Detected (Yes/No), Recording (Yes/No), Recording Duration
+        """
+        h, w = frame.shape[:2]
+        
+        # Panel settings
+        panel_width = 200
+        panel_x = w - panel_width - 10
+        start_y = 30
+        line_height = 35
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.6
+        thickness = 2
+        
+        # Gold Detection Status
+        gold_text = "Gold: YES" if gold_detected else "Gold: NO"
+        gold_color = (0, 255, 0) if gold_detected else (0, 0, 255)
+        cv2.putText(frame, gold_text, (panel_x, start_y), font, font_scale, gold_color, thickness)
+        
+        # Recording Status
+        is_recording = self.gold_detector.recording
+        rec_text = "Recording: YES" if is_recording else "Recording: NO"
+        rec_color = (0, 255, 0) if is_recording else (0, 0, 255)
+        cv2.putText(frame, rec_text, (panel_x, start_y + line_height), font, font_scale, rec_color, thickness)
+        
+        # Recording Duration
+        if is_recording and self.recording_start_time is not None:
+            duration = time.time() - self.recording_start_time
+            minutes = int(duration // 60)
+            seconds = int(duration % 60)
+            duration_text = f"Duration: {minutes:02d}:{seconds:02d}"
+        else:
+            duration_text = "Duration: 00:00"
+        cv2.putText(frame, duration_text, (panel_x, start_y + 2 * line_height), font, font_scale, (255, 255, 255), thickness)
+        
+        return frame
+    
     def run(self):
+        window_name = "Gold + YOLO26 Detection (ROI)"
+        cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
+        
+        # Track recording start time
+        self.recording_start_time = None
+        
         while True:
             ret, frame = self.cap.read()
             if not ret:
@@ -220,9 +282,21 @@ class MultiDetectorROI:
 
             # ---- GOLD FILTERING ----
             frame, gold_detected = self.detect_gold_filtered(frame, person_masks)
+            
+            # Track recording start time
+            was_recording = self.gold_detector.recording
             self.gold_detector.handle_recording(frame, gold_detected)
+            
+            # Update recording start time
+            if self.gold_detector.recording and not was_recording:
+                self.recording_start_time = time.time()
+            elif not self.gold_detector.recording:
+                self.recording_start_time = None
 
-            cv2.imshow("Gold + YOLO26 Detection (ROI)", frame)
+            # Draw status panel on the right
+            frame = self.draw_status_panel(frame, gold_detected)
+            
+            cv2.imshow(window_name, frame)
 
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
