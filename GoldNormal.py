@@ -1,23 +1,386 @@
 from ultralytics import YOLO
 import cv2
+from pathlib import Path
+import time
+from datetime import datetime
+import numpy as np
 
-model = YOLO("yolo26n-seg.pt")
 
-cap = cv2.VideoCapture(0)
 
-while True:
-    ret,frame = cap.read()
-    if not ret:
-        break
 
-    results = model(frame, classes=[0])
+# ------------------- YOLO26 SEGMENTATION -------------------
+class YOLOSegmentation:
+    def __init__(self, model_path="yolo26n-seg.pt", roi=None, classes=[0]):
+        """
+        Run YOLO26 segmentation on ROI.
+        classes=[0] means 'person' only.
+        """
+        self.model = YOLO(model_path)
+        self.roi = roi
+        self.classes = classes
+        
+        
+    def crop_roi(self,frame):
+        x1,y1,x2,y2 = self.roi
+        return frame[y1:y2, x1:x2]
+        
+    def convert_to_full_coords(self,box):
+        x1,y1,x2,y2 = map(int, box.xyxy[0])
+        roi_x1,roi_y1,_,_ = self.roi
+        x1 += roi_x1
+        x2 += roi_x1
+        y1 += roi_y1
+        y2 += roi_y1
+        return x1,y1,x2,y2
+        
+    def draw_detection(self,frame, coords, conf):
+        x1,y1,x2,y2 = coords
+        cv2.rectangle(frame, (x1,y1), (x2,y2), (0,255,0), 2)
+        label = f"Person {conf:.2f}"
+        cv2.putText(frame, label, (x1,y1-8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255),2)
+            
+    def predict_and_draw(self, frame, results):
+        annotated_roi = results.plot()
     
-    annotated_frame = results[0].plot()
+    # Get ROI coordinates as ints
+        x1, y1, x2, y2 = map(int, self.roi)
     
-    cv2.imshow("YOLO SEGMENTATION", annotated_frame)
+    # Compute width and height correctly
+        width = x2 - x1
+        height = y2 - y1
+
+    # Resize annotated ROI to match ROI size
+        annotated_roi = cv2.resize(annotated_roi, (width, height))
+
+    # Make sure we don’t go out of frame bounds
+        height = min(height, frame.shape[0] - y1)
+        width = min(width, frame.shape[1] - x1)
+        annotated_roi = annotated_roi[:height, :width]
+
+    # Paste
+        frame[y1:y1+height, x1:x1+width] = annotated_roi
+
+        return frame
+
+
+
+
+
+
+
+# ------------------- GOLD DETECTOR LAYER-------------------
+class GoldDetectorROI:
+    def __init__(self, model_path="best.pt", roi=None):
+        """
+        Initialize the detector.
+        :param model_path: path to YOLO weights
+        :param webcam_index: webcam ID
+        :param roi: tuple of (x1, y1, x2, y2) defining the region of interest
+        """
+        self.model = YOLO(model_path)
+        self.roi = roi  # ROI as (x1, y1, x2, y2)
+        
+        #Recording attributes
+        self.recording = False
+        self.writer = None
+        self.last_detection_time = 0
+        self.out_file = None
+        self.out_dir = Path("runs/recordings")
+        self.out_dir.mkdir(parents = True, exist_ok = True)
+        self.fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        
+
+    def crop_roi(self, frame):
+        """Crop the ROI from the frame."""
+        x1, y1, x2, y2 = self.roi
+        return frame[y1:y2, x1:x2] #returns the cropped frame
+
+    def convert_to_full_coords(self, box):
+        """Convert ROI-relative box coordinates to full frame coordinates.""" 
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        roi_x1, roi_y1, _, _ = self.roi
+        x1 += roi_x1
+        x2 += roi_x1
+        y1 += roi_y1
+        y2 += roi_y1
+        return x1, y1, x2, y2
+
+
+    def draw_detection(self, frame, coords, conf):
+        """Draw detection box and label on frame."""
+        x1, y1, x2, y2 = coords
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        label = f"Gold Detected {conf:.2f}"
+        cv2.putText(frame, label, (x1, y1 - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
     
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
+    def predict_and_draw(self, frame):
+        """
+        Run gold detection on ROI, draw results on frame,
+        and handle recording logic. Returns frame + gold_detected flag.
+        """
+        roi_frame = self.crop_roi(frame)
+        results = self.model(roi_frame, conf = 0.2)[0]
+        
+        gold_detected = False
+        for box in results.boxes:
+            coords = self.convert_to_full_coords(box)
+            conf = box.conf.item()
+            self.draw_detection(frame,coords,conf)
+            gold_detected = True
+        
+        return frame, gold_detected
     
-cap.release()
-cv2.destroyAllWindows()
+    
+    def handle_recording(self, frame, gold_detected):
+        """
+        Start/stop recording if gold is detected.
+        """
+        current_time = time.time()
+        if gold_detected:
+            self.last_detection_time = current_time
+            if not self.recording:
+                h, w = frame.shape[:2]
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.out_file = self.out_dir / f"gold_detected_{ts}.mp4"
+                self.writer = cv2.VideoWriter(str(self.out_file), self.fourcc, 20.0, (w, h))
+                self.recording = True
+                print(f"Recording started: {self.out_file}")
+
+        if self.recording and (current_time - self.last_detection_time) > 30:
+            if self.writer is not None:
+                self.writer.release()
+            self.writer = None
+            self.recording = False
+
+        if self.recording and self.writer is not None:
+            self.writer.write(frame)    
+        
+
+
+class MultiDetectorROI:
+    def __init__(self, gold_model_path="best.pt", yolo26_model_path="yolo26n-seg.pt", roi=None):
+        self.cap = cv2.VideoCapture(0)
+        self.roi = roi
+        self.gold_detector = GoldDetectorROI(
+            model_path=gold_model_path,
+            roi=roi
+        )
+        self.seg_detector = YOLOSegmentation(yolo26_model_path, roi)
+
+    #overlap solution
+    def box_overlaps_mask(self, box_coords, person_masks, roi):
+        """
+        True overlap check using binary mask intersection.
+        """
+        if person_masks is None:
+            return False
+
+        x1, y1, x2, y2 = box_coords
+        roi_x1, roi_y1, roi_x2, roi_y2 = roi
+
+        roi_w = roi_x2 - roi_x1
+        roi_h = roi_y2 - roi_y1
+
+        # Create empty person mask image
+        person_binary = np.zeros((roi_h, roi_w), dtype=np.uint8)
+
+        # Draw each person contour
+        for mask_points in person_masks:
+            contour = np.array(mask_points, dtype=np.int32)
+            cv2.fillPoly(person_binary, [contour], 255)
+
+        # Create gold box mask (ROI-relative)
+        box_mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
+
+        bx1 = x1 - roi_x1
+        by1 = y1 - roi_y1
+        bx2 = x2 - roi_x1
+        by2 = y2 - roi_y1
+
+        cv2.rectangle(box_mask, (bx1, by1), (bx2, by2), 255, -1)
+
+        # Intersection
+        overlap = cv2.bitwise_and(person_binary, box_mask)
+
+        # If any overlap pixels exist → reject
+        return np.any(overlap)
+
+
+        
+    def resize_with_aspect_ratio(self, frame, target_width, target_height):
+        """
+        Resize frame to fit within target dimensions while maintaining aspect ratio.
+        """
+        h, w = frame.shape[:2]
+        
+        # Calculate scaling factor to fit within target dimensions
+        scale_w = target_width / w
+        scale_h = target_height / h
+        scale = min(scale_w, scale_h)  # Use smaller scale to fit both dimensions
+        
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        return resized
+    
+    def draw_status_panel(self, frame, gold_detected):
+        """
+        Draw status labels on the right side of the frame.
+        Shows: Gold Detected (Yes/No), Recording (Yes/No), Recording Duration
+        """
+        h, w = frame.shape[:2]
+        
+        # Panel settings
+        panel_width = 200
+        panel_x = w - panel_width - 10
+        start_y = 30
+        line_height = 35
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.6
+        thickness = 2
+        
+        # Gold Detection Status
+        gold_text = "Gold: YES" if gold_detected else "Gold: NO"
+        gold_color = (0, 255, 0) if gold_detected else (0, 0, 255)
+        cv2.putText(frame, gold_text, (panel_x, start_y), font, font_scale, gold_color, thickness)
+        
+        # Recording Status
+        is_recording = self.gold_detector.recording
+        rec_text = "Recording: YES" if is_recording else "Recording: NO"
+        rec_color = (0, 255, 0) if is_recording else (0, 0, 255)
+        cv2.putText(frame, rec_text, (panel_x, start_y + line_height), font, font_scale, rec_color, thickness)
+        
+        # Recording Duration
+        if is_recording and self.recording_start_time is not None:
+            duration = time.time() - self.recording_start_time
+            minutes = int(duration // 60)
+            seconds = int(duration % 60)
+            duration_text = f"Duration: {minutes:02d}:{seconds:02d}"
+        else:
+            duration_text = "Duration: 00:00"
+        cv2.putText(frame, duration_text, (panel_x, start_y + 2 * line_height), font, font_scale, (255, 255, 255), thickness)
+        
+        return frame
+    
+    def run(self):
+        window_name = "Gold + YOLO26 Detection (ROI)"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        
+        # Get screen dimensions using a temporary full-screen window
+        temp_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        cv2.imshow(window_name, temp_frame)
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        cv2.waitKey(1)
+        
+        # Get the screen size from window rect
+        try:
+            screen_width = cv2.getWindowImageRect(window_name)[2]
+            screen_height = cv2.getWindowImageRect(window_name)[3]
+        except:
+            # Fallback to common screen size if detection fails
+            screen_width, screen_height = 1920, 1080
+        
+        # Reset to normal window mode
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+        
+        # Use 90% of screen to leave some margin
+        target_width = int(screen_width * 0.9)
+        target_height = int(screen_height * 0.9)
+        
+        # Track recording start time
+        self.recording_start_time = None
+        
+        while True:
+            ret, frame = self.cap.read()
+            if not ret:
+                break
+
+            # Draw ROI rectangle
+            x1, y1, x2, y2 = self.roi
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+
+            # ---- SEGMENTATION ONCE ----
+            roi_frame = self.seg_detector.crop_roi(frame)
+            seg_results = self.seg_detector.model(
+                roi_frame,
+                classes=self.seg_detector.classes,
+                conf=0.2
+            )[0]
+
+            person_masks = seg_results.masks.xy if seg_results.masks else None
+
+            # Draw segmentation
+            frame = self.seg_detector.predict_and_draw(frame, seg_results)
+
+            # ---- GOLD FILTERING ----
+            frame, gold_detected = self.detect_gold_filtered(frame, person_masks)
+            
+            # Track recording start time
+            was_recording = self.gold_detector.recording
+            self.gold_detector.handle_recording(frame, gold_detected)
+            
+            # Update recording start time
+            if self.gold_detector.recording and not was_recording:
+                self.recording_start_time = time.time()
+            elif not self.gold_detector.recording:
+                self.recording_start_time = None
+
+            # Draw status panel on the right
+            frame = self.draw_status_panel(frame, gold_detected)
+            
+            # Resize frame to fit screen while maintaining aspect ratio
+            display_frame = self.resize_with_aspect_ratio(frame, target_width, target_height)
+            
+            cv2.imshow(window_name, display_frame)
+
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+        if self.gold_detector.writer is not None:
+            self.gold_detector.writer.release()
+            self.gold_detector.writer = None
+            self.gold_detector.recording = False
+            print("Recording safely closed.")
+
+        self.cap.release()
+        cv2.destroyAllWindows()
+
+
+    def detect_gold_filtered(self, frame, person_masks):
+        """
+        Run gold detection but filter out detections that overlap with person masks.
+        """
+        roi_frame = self.gold_detector.crop_roi(frame)
+        results = self.gold_detector.model(roi_frame, conf=0.2)[0]
+        
+        gold_detected = False
+        for box in results.boxes:
+            coords = self.gold_detector.convert_to_full_coords(box)
+            
+            # Check if this gold detection overlaps with any person
+            if self.box_overlaps_mask(coords, person_masks, self.roi):
+                continue  # Skip completely, draw nothing
+
+            
+            # Valid gold detection (not on person)
+            conf = box.conf.item()
+            self.gold_detector.draw_detection(frame, coords, conf)
+            gold_detected = True
+    
+        return frame, gold_detected
+
+# ------------------- RUN -------------------
+if __name__ == "__main__":
+    seg_x1 = 200
+    seg_y1 = 200 
+    seg_x2 = 800
+    seg_y2 = 800
+    
+    detector = MultiDetectorROI(
+        gold_model_path="best.pt",
+        yolo26_model_path="yolo26n-seg.pt",
+        roi=(seg_x1,seg_y1,seg_x2, seg_y2)
+    )
+    detector.run()
