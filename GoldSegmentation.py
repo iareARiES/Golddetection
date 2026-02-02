@@ -44,8 +44,8 @@ class YOLOSegmentation:
         Draw segmentation results that are already computed.
         """
         annotated_roi = results.plot()
-
         x1, y1, x2, y2 = self.roi
+        annotated_roi = cv2.resize(annotated_roi, (x2-x1, y2-y1))
         frame[y1:y2, x1:x2] = annotated_roi
 
         return frame
@@ -135,10 +135,10 @@ class GoldDetectorROI:
                 print(f"Recording started: {self.out_file}")
 
         if self.recording and (current_time - self.last_detection_time) > 30:
-            self.writer.release()
+            if self.writer is not None:
+                self.writer.release()
             self.writer = None
             self.recording = False
-            print(f"Recording stopped: {self.out_file}")
 
         if self.recording and self.writer is not None:
             self.writer.write(frame)    
@@ -300,6 +300,11 @@ class MultiDetectorROI:
 
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
+        if self.gold_detector.writer is not None:
+            self.gold_detector.writer.release()
+            self.gold_detector.writer = None
+            self.gold_detector.recording = False
+            print("Recording safely closed.")
 
         self.cap.release()
         cv2.destroyAllWindows()
