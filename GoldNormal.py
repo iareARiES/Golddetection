@@ -43,7 +43,7 @@ def get_screen_resolution():
 
 # ------------------- YOLO26 SEGMENTATION -------------------
 class YOLOSegmentation:
-    def __init__(self, model_path="yolo26n-seg.pt", roi=None, classes=[0]):
+    def __init__(self, model_path=None, roi=None, classes=[0]):
         """
         Run YOLO26 segmentation on ROI.
         classes=[0] means 'person' only.
@@ -120,7 +120,7 @@ class YOLOSegmentation:
 
 # ------------------- GOLD DETECTOR LAYER-------------------
 class GoldDetectorROI:
-    def __init__(self, model_path="best.pt", roi=None):
+    def __init__(self, model_path=None, roi=None):
         """
         Initialize the detector.
         :param model_path: path to YOLO weights
@@ -210,7 +210,7 @@ class GoldDetectorROI:
 
 
 class MultiDetectorROI:
-    def __init__(self, gold_model_path="best.pt", yolo26_model_path="yolo26n-seg.pt", roi=None, screen_resolution=None):
+    def __init__(self, gold_model_path=None, yolo26_model_path=None, roi=None, screen_resolution=None):
         self.cap = cv2.VideoCapture(0)
         self.roi = roi
         self.gold_detector = GoldDetectorROI(
