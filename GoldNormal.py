@@ -39,6 +39,15 @@ def get_screen_resolution():
     return None
 
 
+def resize_for_display(frame, display_width, display_height):
+    """Resize frame to fit display dimensions while maintaining aspect ratio."""
+    h, w = frame.shape[:2]
+    scale_w = display_width / w
+    scale_h = display_height / h
+    scale = min(scale_w, scale_h)
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+    return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
 
 # ------------------- YOLO26 SEGMENTATION -------------------
@@ -319,9 +328,6 @@ class MultiDetectorROI:
         return frame
     
     def run(self):
-        window_name = "Gold + YOLO26 Detection (ROI)"
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        
         # Track recording start time
         self.recording_start_time = None
         
@@ -334,39 +340,31 @@ class MultiDetectorROI:
         cam_height, cam_width = first_frame.shape[:2]
         print(f"Camera resolution: {cam_width}x{cam_height}")
         
-        # Determine target screen dimensions
-        if self.screen_resolution:
-            screen_width, screen_height = self.screen_resolution
-            print(f"Using manual screen resolution: {screen_width}x{screen_height}")
-        else:
-            # Auto-detect screen resolution
-            detected = get_screen_resolution()
-            if detected:
-                screen_width, screen_height = detected
-                print(f"Auto-detected screen resolution: {screen_width}x{screen_height}")
-            else:
-                # Fallback to camera resolution (no scaling)
-                screen_width, screen_height = cam_width, cam_height
-                print(f"Using camera resolution (no scaling): {screen_width}x{screen_height}")
+        # ---------------- OpenCV window setup ----------------
+        window_name = "Gold + YOLO26 Detection (ROI)"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)  # allow resizing
         
-        # Calculate scale factor to fit screen while maintaining aspect ratio
+        # Auto-detect screen resolution
+        screen_res = get_screen_resolution()
+        if screen_res:
+            screen_width, screen_height = screen_res
+            print(f"Auto-detected screen: {screen_width}x{screen_height}")
+        else:
+            # fallback to camera frame size
+            screen_width, screen_height = cam_width, cam_height
+            print(f"Using camera resolution: {screen_width}x{screen_height}")
+        
+        # Calculate scale to fit screen (preserve aspect ratio)
         scale_w = screen_width / cam_width
         scale_h = screen_height / cam_height
-        scale = min(scale_w, scale_h)  # Use smaller to fit both dimensions
+        scale = min(scale_w, scale_h)
         
-        # Don't upscale - only keep same size or downscale
-        scale = min(scale, 1.0)
+        display_width = int(cam_width * scale)
+        display_height = int(cam_height * scale)
+        print(f"Display size: {display_width}x{display_height}")
         
-        self.display_width = int(cam_width * scale)
-        self.display_height = int(cam_height * scale)
-        
-        print(f"Display size: {self.display_width}x{self.display_height} (scale: {scale:.2f}x)")
-        
-        # Set window size (not fullscreen to avoid zoom issues)
-        cv2.resizeWindow(window_name, self.display_width, self.display_height)
-        
-        # Process first frame (don't skip it)
-        frame = first_frame
+        # Set OpenCV window size
+        cv2.resizeWindow(window_name, display_width, display_height)
         
         while True:
             ret, frame = self.cap.read()
@@ -406,9 +404,8 @@ class MultiDetectorROI:
             # Draw status panel on the right
             frame = self.draw_status_panel(frame, gold_detected)
             
-            # Resize frame to fit screen while maintaining aspect ratio
-            display_frame = self.resize_with_aspect_ratio(frame, self.display_width, self.display_height)
-            
+            # Resize and display
+            display_frame = resize_for_display(frame, display_width, display_height)
             cv2.imshow(window_name, display_frame)
 
             if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -464,3 +461,4 @@ if __name__ == "__main__":
         screen_resolution=SCREEN_RESOLUTION
     )
     detector.run()
+ 
