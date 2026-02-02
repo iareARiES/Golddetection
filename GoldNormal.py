@@ -160,7 +160,7 @@ class GoldDetectorROI:
 
 
 class MultiDetectorROI:
-    def __init__(self, gold_model_path="best.pt", yolo26_model_path="yolo26n-seg.pt", roi=None):
+    def __init__(self, gold_model_path="best.pt", yolo26_model_path="yolo26n-seg.pt", roi=None, screen_resolution=None):
         self.cap = cv2.VideoCapture(0)
         self.roi = roi
         self.gold_detector = GoldDetectorROI(
@@ -168,6 +168,9 @@ class MultiDetectorROI:
             roi=roi
         )
         self.seg_detector = YOLOSegmentation(yolo26_model_path, roi)
+        # Screen resolution for display scaling (width, height)
+        # If None, will auto-detect from first frame
+        self.screen_resolution = screen_resolution
 
     #overlap solution
     def box_overlaps_mask(self, box_coords, person_masks, roi):
@@ -269,29 +272,38 @@ class MultiDetectorROI:
         window_name = "Gold + YOLO26 Detection (ROI)"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         
-        # Get screen dimensions using a temporary full-screen window
-        temp_frame = np.zeros((100, 100, 3), dtype=np.uint8)
-        cv2.imshow(window_name, temp_frame)
-        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-        cv2.waitKey(1)
-        
-        # Get the screen size from window rect
-        try:
-            screen_width = cv2.getWindowImageRect(window_name)[2]
-            screen_height = cv2.getWindowImageRect(window_name)[3]
-        except:
-            # Fallback to common screen size if detection fails
-            screen_width, screen_height = 1920, 1080
-        
-        # Reset to normal window mode
-        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
-        
-        # Use 90% of screen to leave some margin
-        target_width = int(screen_width * 0.9)
-        target_height = int(screen_height * 0.9)
-        
         # Track recording start time
         self.recording_start_time = None
+        
+        # Read first frame to get camera dimensions
+        ret, first_frame = self.cap.read()
+        if not ret:
+            print("Error: Could not read from camera")
+            return
+        
+        cam_height, cam_width = first_frame.shape[:2]
+        
+        # Determine target screen dimensions
+        if self.screen_resolution:
+            screen_width, screen_height = self.screen_resolution
+        else:
+            # Default to 800x600 for Raspberry Pi compatibility
+            # You can change this to match your screen
+            screen_width, screen_height = 800, 600
+        
+        # Calculate scale factor to fit screen while maintaining aspect ratio
+        scale_w = screen_width / cam_width
+        scale_h = screen_height / cam_height
+        scale = min(scale_w, scale_h)  # Use smaller to fit both dimensions
+        
+        target_width = int(cam_width * scale)
+        target_height = int(cam_height * scale)
+        
+        # Set window size
+        cv2.resizeWindow(window_name, target_width, target_height)
+        
+        # Process first frame (don't skip it)
+        frame = first_frame
         
         while True:
             ret, frame = self.cap.read()
@@ -378,9 +390,15 @@ if __name__ == "__main__":
     seg_x2 = 800
     seg_y2 = 800
     
+    # Set your screen resolution here (width, height)
+    # Common Raspberry Pi resolutions: (800, 480), (1024, 600), (1920, 1080)
+    # Set to None to use default 800x600
+    SCREEN_RESOLUTION = (800, 480)  # Change this to match your screen
+    
     detector = MultiDetectorROI(
         gold_model_path="best.pt",
         yolo26_model_path="yolo26n-seg.pt",
-        roi=(seg_x1,seg_y1,seg_x2, seg_y2)
+        roi=(seg_x1,seg_y1,seg_x2, seg_y2),
+        screen_resolution=SCREEN_RESOLUTION
     )
     detector.run()
