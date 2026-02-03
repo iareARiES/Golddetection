@@ -455,8 +455,8 @@ if __name__ == "__main__":
     SCREEN_RESOLUTION = None  # Auto-detect
     
     detector = MultiDetectorROI(
-        gold_model_path="best.pt",
-        yolo26_model_path="yolo26n-seg.pt",
+        gold_model_path="best.onnx",
+        yolo26_model_path="yolo26n-seg.onnx",
         roi=(seg_x1,seg_y1,seg_x2, seg_y2),
         screen_resolution=SCREEN_RESOLUTION
     )
