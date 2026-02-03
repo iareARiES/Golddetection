@@ -40,15 +40,29 @@ class YOLOSegmentation:
         cv2.putText(frame, label, (x1,y1-8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255),2)
             
     def predict_and_draw(self, frame, results):
-        """
-        Draw segmentation results that are already computed.
-        """
         annotated_roi = results.plot()
-        x1, y1, x2, y2 = self.roi
-        annotated_roi = cv2.resize(annotated_roi, (x2-x1, y2-y1))
-        frame[y1:y2, x1:x2] = annotated_roi
+    
+    # Get ROI coordinates as ints
+        x1, y1, x2, y2 = map(int, self.roi)
+    
+    # Compute width and height correctly
+        width = x2 - x1
+        height = y2 - y1
+
+    # Resize annotated ROI to match ROI size
+        annotated_roi = cv2.resize(annotated_roi, (width, height))
+
+    # Make sure we don’t go out of frame bounds
+        height = min(height, frame.shape[0] - y1)
+        width = min(width, frame.shape[1] - x1)
+        annotated_roi = annotated_roi[:height, :width]
+
+    # Paste
+        frame[y1:y1+height, x1:x1+width] = annotated_roi
 
         return frame
+
+
 
 
 
