@@ -435,14 +435,18 @@ class MultiDetectorROI:
             # Draw segmentation
             frame = self.seg_detector.predict_and_draw(frame, seg_results)
 
+            # Save a clean copy of the frame for OCR BEFORE drawing detections
+            ocr_frame = frame.copy()
+
             # ---- GOLD FILTERING ----
             frame, gold_detected = self.detect_gold_filtered(frame, person_masks)
 
             # Run OCR every 1 second when gold is detected
+            # Use the clean frame copy to avoid reading drawn labels
             current_time = time.time()
             if gold_detected and (current_time - self.last_ocr_time) >= 1.0:
                 self.last_ocr_time = current_time
-                self.last_ocr_text = self.run_ocr_on_roi(frame)
+                self.last_ocr_text = self.run_ocr_on_roi(ocr_frame)
             
             # Track recording start time
             was_recording = self.gold_detector.recording
