@@ -1,8 +1,4 @@
-from ultralytics import YOLO
-import time
-# Load a model
-model = YOLO("best.pt")
-
-# Export the model to engine format
-model.export(format="engine", dynamic=True, verbose=False, half=True, int8=True) # Creates yolov8n.engine
-
+import torch
+print(torch.cuda.is_available())
+print(torch.version.cuda)
+print(torch.cuda.get_device_name(0))

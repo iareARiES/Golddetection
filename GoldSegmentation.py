@@ -4,13 +4,56 @@ from pathlib import Path
 import time
 from datetime import datetime
 import numpy as np
+from paddleocr import PaddleOCR
 
 
+def get_screen_resolution():
+    """
+    Auto-detect screen resolution. Works on Windows, Linux, and Raspberry Pi.
+    Returns (width, height) or None if detection fails.
+    """
+    # Method 1: Try tkinter (works on most systems)
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()  # Hide the window
+        width = root.winfo_screenwidth()
+        height = root.winfo_screenheight()
+        root.destroy()
+        return (width, height)
+    except:
+        pass
+    
+    # Method 2: Try xrandr on Linux/RPi
+    try:
+        import subprocess
+        output = subprocess.check_output(['xrandr']).decode('utf-8')
+        for line in output.split('\n'):
+            if '*' in line:  # Current resolution has asterisk
+                resolution = line.split()[0]
+                width, height = map(int, resolution.split('x'))
+                return (width, height)
+    except:
+        pass
+    
+    # Method 3: Fallback - return None to use camera resolution
+    return None
+
+
+def resize_for_display(frame, display_width, display_height):
+    """Resize frame to fit display dimensions while maintaining aspect ratio."""
+    h, w = frame.shape[:2]
+    scale_w = display_width / w
+    scale_h = display_height / h
+    scale = min(scale_w, scale_h)
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+    return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
 
 # ------------------- YOLO26 SEGMENTATION -------------------
 class YOLOSegmentation:
-    def __init__(self, model_path="yolo26n-seg.pt", roi=None, classes=[0]):
+    def __init__(self, model_path=None, roi=None, classes=[0]):
         """
         Run YOLO26 segmentation on ROI.
         classes=[0] means 'person' only.
@@ -40,25 +83,42 @@ class YOLOSegmentation:
         cv2.putText(frame, label, (x1,y1-8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255),2)
             
     def predict_and_draw(self, frame, results):
-        annotated_roi = results.plot()
-    
-    # Get ROI coordinates as ints
-        x1, y1, x2, y2 = map(int, self.roi)
-    
-    # Compute width and height correctly
-        width = x2 - x1
-        height = y2 - y1
-
-    # Resize annotated ROI to match ROI size
-        annotated_roi = cv2.resize(annotated_roi, (width, height))
-
-    # Make sure we don’t go out of frame bounds
-        height = min(height, frame.shape[0] - y1)
-        width = min(width, frame.shape[1] - x1)
-        annotated_roi = annotated_roi[:height, :width]
-
-    # Paste
-        frame[y1:y1+height, x1:x1+width] = annotated_roi
+        """
+        Draw segmentation results directly on the frame at correct ROI-offset positions.
+        No resizing or pasting - draws on original frame.
+        """
+        x1_roi, y1_roi, x2_roi, y2_roi = map(int, self.roi)
+        
+        # Draw masks if available
+        if results.masks is not None:
+            for mask_points in results.masks.xy:
+                # Offset mask points by ROI position
+                contour = np.array(mask_points, dtype=np.int32)
+                contour[:, 0] += x1_roi  # Offset X
+                contour[:, 1] += y1_roi  # Offset Y
+                
+                # Draw filled mask with transparency
+                overlay = frame.copy()
+                cv2.fillPoly(overlay, [contour], (0, 255, 0))
+                cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
+                
+                # Draw mask outline
+                cv2.polylines(frame, [contour], True, (0, 255, 0), 2)
+        
+        # Draw boxes if available
+        if results.boxes is not None:
+            for box in results.boxes:
+                bx1, by1, bx2, by2 = map(int, box.xyxy[0])
+                # Offset by ROI position
+                bx1 += x1_roi
+                bx2 += x1_roi
+                by1 += y1_roi
+                by2 += y1_roi
+                
+                conf = box.conf.item()
+                cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
+                label = f"Person {conf:.2f}"
+                cv2.putText(frame, label, (bx1, by1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         return frame
 
@@ -70,7 +130,7 @@ class YOLOSegmentation:
 
 # ------------------- GOLD DETECTOR LAYER-------------------
 class GoldDetectorROI:
-    def __init__(self, model_path="best.pt", roi=None):
+    def __init__(self, model_path=None, roi=None):
         """
         Initialize the detector.
         :param model_path: path to YOLO weights
@@ -160,7 +220,7 @@ class GoldDetectorROI:
 
 
 class MultiDetectorROI:
-    def __init__(self, gold_model_path="best.pt", yolo26_model_path="yolo26n-seg.pt", roi=None):
+    def __init__(self, gold_model_path=None, yolo26_model_path=None, roi=None, screen_resolution=None):
         self.cap = cv2.VideoCapture(0)
         self.roi = roi
         self.gold_detector = GoldDetectorROI(
@@ -168,6 +228,9 @@ class MultiDetectorROI:
             roi=roi
         )
         self.seg_detector = YOLOSegmentation(yolo26_model_path, roi)
+        # Screen resolution for display scaling (width, height)
+        # If None, will auto-detect from first frame
+        self.screen_resolution = screen_resolution
 
     #overlap solution
     def box_overlaps_mask(self, box_coords, person_masks, roi):
@@ -266,11 +329,43 @@ class MultiDetectorROI:
         return frame
     
     def run(self):
-        window_name = "Gold + YOLO26 Detection (ROI)"
-        cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
-        
         # Track recording start time
         self.recording_start_time = None
+        
+        # Read first frame to get camera dimensions
+        ret, first_frame = self.cap.read()
+        if not ret:
+            print("Error: Could not read from camera")
+            return
+        
+        cam_height, cam_width = first_frame.shape[:2]
+        print(f"Camera resolution: {cam_width}x{cam_height}")
+        
+        # ---------------- OpenCV window setup ----------------
+        window_name = "Gold + YOLO26 Detection (ROI)"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)  # allow resizing
+        
+        # Auto-detect screen resolution
+        screen_res = get_screen_resolution()
+        if screen_res:
+            screen_width, screen_height = screen_res
+            print(f"Auto-detected screen: {screen_width}x{screen_height}")
+        else:
+            # fallback to camera frame size
+            screen_width, screen_height = cam_width, cam_height
+            print(f"Using camera resolution: {screen_width}x{screen_height}")
+        
+        # Calculate scale to fit screen (preserve aspect ratio)
+        scale_w = screen_width / cam_width
+        scale_h = screen_height / cam_height
+        scale = min(scale_w, scale_h)
+        
+        display_width = int(cam_width * scale)
+        display_height = int(cam_height * scale)
+        print(f"Display size: {display_width}x{display_height}")
+        
+        # Set OpenCV window size
+        cv2.resizeWindow(window_name, display_width, display_height)
         
         while True:
             ret, frame = self.cap.read()
@@ -310,7 +405,9 @@ class MultiDetectorROI:
             # Draw status panel on the right
             frame = self.draw_status_panel(frame, gold_detected)
             
-            cv2.imshow(window_name, frame)
+            # Resize and display
+            display_frame = resize_for_display(frame, display_width, display_height)
+            cv2.imshow(window_name, display_frame)
 
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
@@ -354,9 +451,15 @@ if __name__ == "__main__":
     seg_x2 = 800
     seg_y2 = 800
     
+    # Screen resolution - set to None for auto-detection (recommended)
+    # Or manually set, e.g., (800, 480) for RPi 7" screen
+    SCREEN_RESOLUTION = None  # Auto-detect
+    
     detector = MultiDetectorROI(
-        gold_model_path="best.pt",
-        yolo26_model_path="yolo26n-seg.pt",
-        roi=(seg_x1,seg_y1,seg_x2, seg_y2)
+        gold_model_path="best.onnx",
+        yolo26_model_path="yolo26n-seg.onnx",
+        roi=(seg_x1,seg_y1,seg_x2, seg_y2),
+        screen_resolution=SCREEN_RESOLUTION
     )
     detector.run()
+ 

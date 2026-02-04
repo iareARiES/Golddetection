@@ -1,10 +1,18 @@
+
+#it has the PaddleOCR Logic 
+
 from ultralytics import YOLO
 import cv2
 from pathlib import Path
 import time
 from datetime import datetime
 import numpy as np
-import easyocr
+import os
+
+# Disable oneDNN to prevent PaddleOCR compatibility issues
+os.environ['FLAGS_use_mkldnn'] = '0'
+
+from paddleocr import PaddleOCR
 
 
 def get_screen_resolution():
@@ -232,9 +240,9 @@ class MultiDetectorROI:
         # If None, will auto-detect from first frame
         self.screen_resolution = screen_resolution
         try:
-            print("Initializing EasyOCR (this may take a moment)...")
-            self.ocr = easyocr.Reader(['en'], gpu=True)
-            print("EasyOCR ready!")
+            print("Initializing PaddleOCR...")
+            self.ocr = PaddleOCR(lang="en")
+            print("PaddleOCR ready!")
         except Exception as e:
             print(f"Warning: OCR initialization failed: {e}")
             self.ocr = None
@@ -244,7 +252,7 @@ class MultiDetectorROI:
 
     def run_ocr_on_roi(self, frame):
         """
-        Runs OCR only inside ROI and returns detected number/text.
+        Runs PaddleOCR only inside ROI and returns detected number/text.
         """
         if self.ocr is None:
             return "OCR unavailable"
@@ -252,13 +260,14 @@ class MultiDetectorROI:
         try:
             x1, y1, x2, y2 = self.roi
             roi_frame = frame[y1:y2, x1:x2]
-            results = self.ocr.readtext(roi_frame)
+            result = self.ocr.ocr(roi_frame)
 
             detected_text = []
 
-            if results:
-                for (bbox, text, conf) in results:
-                    # Keep only text containing digits
+            if result and result[0]:
+                for line in result[0]:
+                    text = line[1][0]
+                    # Keep only text with digits
                     if any(char.isdigit() for char in text):
                         detected_text.append(text)
                 
@@ -347,7 +356,7 @@ class MultiDetectorROI:
         
         # Gold Detection Status
         gold_text = "Gold: YES" if gold_detected else "Gold: NO"
-        ocr_text = f"Weight: {self.last_ocr_text}"
+        ocr_text = f"OCR: {self.last_ocr_text}"
         cv2.putText(frame, ocr_text,
                     (panel_x, start_y + 3 * line_height),
                     font, font_scale,
@@ -514,7 +523,3 @@ if __name__ == "__main__":
         screen_resolution=SCREEN_RESOLUTION
     )
     detector.run()
-    
-
-
-#NEW EDITED FILE
