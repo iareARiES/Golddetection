@@ -4,7 +4,7 @@ from pathlib import Path
 import time
 from datetime import datetime
 import numpy as np
-from paddleocr import PaddleOCR
+
 
 
 def get_screen_resolution():

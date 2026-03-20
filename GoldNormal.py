@@ -208,7 +208,7 @@ class GoldDetectorROI:
                 self.recording = True
                 print(f"Recording started: {self.out_file}")
 
-        if self.recording and (current_time - self.last_detection_time) > 30:
+        if self.recording and (current_time - self.last_detection_time) > 10:
             if self.writer is not None:
                 self.writer.release()
             self.writer = None
@@ -512,7 +512,7 @@ if __name__ == "__main__":
     SCREEN_RESOLUTION = None  # Auto-detect
     
     detector = MultiDetectorROI(
-        gold_model_path="best.onnx",
+        gold_model_path="Yolo11n.engine",
         yolo26_model_path="yolo26n-seg.onnx",
         roi=(seg_x1,seg_y1,seg_x2, seg_y2),
         screen_resolution=SCREEN_RESOLUTION
