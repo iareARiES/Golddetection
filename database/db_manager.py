@@ -123,6 +123,8 @@ class JewelleryDBManager:
         - Insert row with image_path = NULL
         - Return the new row id
         """
+        # Store absolute paths so they are clickable in DB viewers
+        video_path = str(Path(video_path).resolve())
         norm_weight = self._normalize_weight(weight)
         unique_id = self.generate_unique_id(captured_at, weight)
 
@@ -151,6 +153,8 @@ class JewelleryDBManager:
 
     def update_image_path(self, row_id: int, image_path: str):
         """Update the image_path and image_extracted_at for a given row."""
+        # Store absolute path so it is clickable in DB viewers
+        image_path = str(Path(image_path).resolve())
         with self.lock:
             self.conn.execute(
                 """UPDATE gold_detections

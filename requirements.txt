@@ -1,3 +1,12 @@
+# Core dependencies
 ultralytics>=8.0.0
 opencv-python>=4.5.0
 numpy>=1.20.0
+easyocr>=1.7.0
+
+# GUI Viewer
+customtkinter>=5.0.0
+pillow>=9.0.0
+
+# Database module uses only Python built-ins (no install needed):
+# sqlite3, threading, logging, pathlib, datetime, re

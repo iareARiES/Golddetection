@@ -22,6 +22,15 @@ python3 GoldNormal.py
 
 Press **Q** to quit.
 
+### GUI Viewer (browse detections)
+
+```bash
+pip install customtkinter pillow
+python3 viewer/app.py
+```
+
+The viewer reads from the database and auto-refreshes every 5 seconds. It can run alongside the detection system.
+
 ## Requirements
 
 ### Python Dependencies
@@ -55,6 +64,15 @@ Golddetection/
 │   ├── db_manager.py              ← SQLite DB with deduplication
 │   ├── image_extractor.py         ← Extracts best gold frame from videos
 │   └── post_processor.py          ← Background thread for image extraction
+├── viewer/                        ← GUI viewer application
+│   ├── app.py                     ← Run this to launch viewer
+│   ├── db_reader.py               ← Read-only DB queries
+│   ├── file_opener.py             ← Cross-platform file opener
+│   └── widgets/                   ← UI components
+│       ├── sidebar.py
+│       ├── topbar.py
+│       ├── table_view.py
+│       └── detail_panel.py
 ├── weights/                       ← All YOLO model files
 │   ├── Yolo11n.engine             ← Gold detection (TensorRT)
 │   ├── yolo26n-seg.onnx           ← Person segmentation (ONNX)
@@ -122,4 +140,6 @@ python3 test_db.py
 - [OpenCV](https://opencv.org/)
 - [EasyOCR](https://github.com/JaidedAI/EasyOCR)
 - [NumPy](https://numpy.org/)
+- [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter) (viewer GUI)
+- [Pillow](https://pillow.readthedocs.io/) (image thumbnails in viewer)
 - SQLite3 (built-in with Python)
