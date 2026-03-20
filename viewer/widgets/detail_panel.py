@@ -16,7 +16,8 @@ class DetailPanel(customtkinter.CTkFrame):
     """Right panel showing detail for the selected detection."""
 
     def __init__(self, parent, **kwargs):
-        super().__init__(parent, width=280, corner_radius=0, **kwargs)
+        width = kwargs.pop("width", 280)
+        super().__init__(parent, width=width, corner_radius=0, **kwargs)
         self.grid_propagate(False)
         self.grid_columnconfigure(0, weight=1)
 

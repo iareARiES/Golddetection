@@ -33,8 +33,24 @@ class App(customtkinter.CTk):
     def __init__(self):
         super().__init__()
         self.title("Gold Detection Viewer")
-        self.geometry("1200x680")
+
+        # --- Auto-detect screen size and scale to 80% ---
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        win_w = int(screen_w * 0.80)
+        win_h = int(screen_h * 0.80)
+        # Clamp to reasonable minimum
+        win_w = max(win_w, 900)
+        win_h = max(win_h, 560)
+        # Center on screen
+        x = (screen_w - win_w) // 2
+        y = (screen_h - win_h) // 2
+        self.geometry(f"{win_w}x{win_h}+{x}+{y}")
         self.minsize(900, 560)
+
+        # Scale sidebar and detail panel widths based on screen
+        self._sidebar_width = max(180, int(win_w * 0.16))
+        self._detail_width = max(240, int(win_w * 0.22))
 
         self.db = DetectionReader()
         self.current_filter = "all"
@@ -51,7 +67,7 @@ class App(customtkinter.CTk):
         self.grid_rowconfigure(0, weight=1)
 
         # --- Sidebar (left) ---
-        self.sidebar = Sidebar(self, on_nav_change=self._on_nav_change)
+        self.sidebar = Sidebar(self, on_nav_change=self._on_nav_change, width=self._sidebar_width)
         self.sidebar.grid(row=0, column=0, sticky="nsw")
 
         # --- Main area (center) ---
@@ -67,7 +83,7 @@ class App(customtkinter.CTk):
         self.table.grid(row=1, column=0, sticky="nsew", padx=(0, 0))
 
         # --- Detail panel (right) ---
-        self.detail_panel = DetailPanel(self)
+        self.detail_panel = DetailPanel(self, width=self._detail_width)
         self.detail_panel.grid(row=0, column=2, sticky="nse")
 
     def _refresh(self):

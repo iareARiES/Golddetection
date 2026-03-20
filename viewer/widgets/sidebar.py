@@ -13,7 +13,8 @@ class Sidebar(customtkinter.CTkFrame):
     ]
 
     def __init__(self, parent, on_nav_change: callable, **kwargs):
-        super().__init__(parent, width=200, corner_radius=0, **kwargs)
+        width = kwargs.pop("width", 200)
+        super().__init__(parent, width=width, corner_radius=0, **kwargs)
         self.on_nav_change = on_nav_change
         self.active_filter = "all"
         self.nav_buttons = {}
