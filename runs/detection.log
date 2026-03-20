@@ -1,0 +1,33 @@
+2026-03-20 17:22:10,934 [INFO] database.post_processor: Post-processor background thread started
+2026-03-20 17:22:24,636 [WARNING] database.db_manager: OCR weight unreadable, using 'unknown'
+2026-03-20 17:22:24,644 [INFO] database.db_manager: New detection inserted: 20260320_172224_unknown (row 1)
+2026-03-20 17:22:25,936 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
+2026-03-20 17:22:26,067 [ERROR] database.image_extractor: Failed to open video: runs/recordings/gold_detected_20260320_172224.mp4
+2026-03-20 17:22:26,068 [WARNING] database.post_processor: No image extracted for row 1: runs/recordings/gold_detected_20260320_172224.mp4
+2026-03-20 17:22:41,068 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
+2026-03-20 17:22:41,076 [ERROR] database.image_extractor: Failed to open video: runs/recordings/gold_detected_20260320_172224.mp4
+2026-03-20 17:22:41,076 [WARNING] database.post_processor: No image extracted for row 1: runs/recordings/gold_detected_20260320_172224.mp4
+2026-03-20 17:22:56,077 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
+2026-03-20 17:22:59,341 [WARNING] database.db_manager: OCR weight unreadable, using 'unknown'
+2026-03-20 17:22:59,350 [INFO] database.db_manager: New detection inserted: 20260320_172259_unknown (row 2)
+2026-03-20 17:22:59,511 [INFO] database.image_extractor: Image extraction complete: runs/images/gold_detected_20260320_172224_gold.jpg (conf=0.40)
+2026-03-20 17:22:59,532 [INFO] database.db_manager: Image path updated for row 1: runs/images/gold_detected_20260320_172224_gold.jpg
+2026-03-20 17:23:14,533 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
+2026-03-20 17:23:14,541 [ERROR] database.image_extractor: Failed to open video: runs/recordings/gold_detected_20260320_172259.mp4
+2026-03-20 17:23:14,542 [WARNING] database.post_processor: No image extracted for row 2: runs/recordings/gold_detected_20260320_172259.mp4
+2026-03-20 17:23:27,933 [WARNING] database.db_manager: OCR weight unreadable, using 'unknown'
+2026-03-20 17:23:27,944 [INFO] database.db_manager: New detection inserted: 20260320_172327_unknown (row 3)
+2026-03-20 17:23:29,543 [INFO] database.post_processor: Post-processor: 2 pending video(s) to process
+2026-03-20 17:23:31,479 [INFO] database.image_extractor: Image extraction complete: runs/images/gold_detected_20260320_172259_gold.jpg (conf=0.49)
+2026-03-20 17:23:31,490 [INFO] database.db_manager: Image path updated for row 2: runs/images/gold_detected_20260320_172259_gold.jpg
+2026-03-20 17:23:31,497 [ERROR] database.image_extractor: Failed to open video: runs/recordings/gold_detected_20260320_172327.mp4
+2026-03-20 17:23:31,497 [WARNING] database.post_processor: No image extracted for row 3: runs/recordings/gold_detected_20260320_172327.mp4
+2026-03-20 17:23:46,498 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
+2026-03-20 17:23:46,520 [ERROR] database.image_extractor: Failed to open video: runs/recordings/gold_detected_20260320_172327.mp4
+2026-03-20 17:23:46,520 [WARNING] database.post_processor: No image extracted for row 3: runs/recordings/gold_detected_20260320_172327.mp4
+2026-03-20 17:24:01,521 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
+2026-03-20 17:24:01,535 [ERROR] database.image_extractor: Failed to open video: runs/recordings/gold_detected_20260320_172327.mp4
+2026-03-20 17:24:01,535 [WARNING] database.post_processor: No image extracted for row 3: runs/recordings/gold_detected_20260320_172327.mp4
+2026-03-20 17:24:16,536 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
+2026-03-20 17:24:16,544 [ERROR] database.image_extractor: Failed to open video: runs/recordings/gold_detected_20260320_172327.mp4
+2026-03-20 17:24:16,545 [WARNING] database.post_processor: No image extracted for row 3: runs/recordings/gold_detected_20260320_172327.mp4

@@ -27,7 +27,7 @@ class TableView(customtkinter.CTkScrollableFrame):
     # Colors
     ROW_SELECTED = ("#E6F1FB", "#1a2a3a")
     ROW_HOVER = ("#F0F0F0", "#2a2a2a")
-    ROW_NORMAL = ("transparent", "transparent")
+    ROW_NORMAL = "transparent"
     BADGE_GREEN_BG = ("#EAF3DE", "#1a2e1a")
     BADGE_GREEN_FG = ("#3B6D11", "#9FE1CB")
     BADGE_AMBER_BG = ("#FAEEDA", "#2e2010")
