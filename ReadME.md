@@ -1,72 +1,125 @@
-# Gold Detection and Segmentation
+# Gold Detection and Segmentation System
 
-This project contains Python scripts for detecting gold and segmenting objects in a video stream using YOLO (You Only Look Once) models.
+Real-time gold/jewellery detection system using YOLO models with person segmentation to suppress false positives, OCR weight reading, auto-recording, and a SQLite database for logging every detection event.
 
-## Scripts
+## How It Works
 
-### `detect.py`
+1. **Gold Detection** — Custom YOLO11n model detects gold objects in a defined ROI
+2. **Person Segmentation** — YOLO26-seg masks out people so gold worn by a person is ignored
+3. **Weight Reading** — EasyOCR reads the weight from the scale display
+4. **Auto Recording** — Video is recorded automatically when gold is detected, stops 10s after last detection
+5. **Database Logging** — Every detection is logged to SQLite with video path, weight, timestamp, and extracted image
 
-This script uses a YOLO model to detect gold in a webcam feed. It focuses on a specific region of interest (ROI), draws bounding boxes around detected gold, and records a video when gold is detected.
-
-**Usage:**
-
-```bash
-python detect.py
-```
-
-### `GoldNormal.py`
-
-This script performs segmentation on a webcam feed using a YOLO model and displays the annotated frame.
-
-**Usage:**
+## Quick Start
 
 ```bash
-python GoldNormal.py
+# 1. Install Python dependencies
+pip install -r requirements.txt
+
+# 2. Run the detection system
+python3 GoldNormal.py
 ```
 
-### `GoldSegmentation.py`
+Press **Q** to quit.
 
-This is a more advanced script that combines gold detection with person segmentation. It uses two YOLO models:
+## Requirements
 
-1.  A model for gold detection.
-2.  A model for person segmentation.
-
-The script detects gold only if it does not overlap with a person in the defined region of interest (ROI). This is useful for preventing false positives where a person might be wearing gold.
-
-**Usage:**
+### Python Dependencies
 
 ```bash
-python GoldSegmentation.py
+pip install ultralytics opencv-python easyocr numpy
 ```
 
-## Models
-
-The following YOLO models are used in this project:
-
-*   `best.pt`: A model trained for gold detection.
-*   `yolo26n-seg.pt`: A model for segmentation.
-*   `Gold.pt`: (Not explicitly used in the scripts, but likely another gold detection model)
-*   `yoloe-26n-seg.pt`: (Not explicitly used in the scripts, but likely another segmentation model)
-
-## Data
-
-The `data.yaml` file defines the dataset configuration for training the gold detection model. The dataset was created using Roboflow and contains the following classes:
-
-*   Bangles
-*   Chain
-*   Earrings
-*   Gold Bar
-*   Gold Coin
-*   Ring
-
-## Dependencies
-
-*   [PyTorch](https://pytorch.org/)
-*   [Ultralytics YOLO](https://docs.ultralytics.com/)
-*   [OpenCV](https://opencv.org/)
-
-You can install the dependencies using pip:
+Or use the requirements file:
 
 ```bash
 pip install -r requirements.txt
 ```
+
+### Optional: Database Viewer
+
+To visually browse the detection database:
+
+```bash
+sudo apt install sqlitebrowser
+sqlitebrowser runs/jewellery_detections.db
+```
+
+## Project Structure
+
+```
+Golddetection/
+├── GoldNormal.py                  ← Main script (run this)
+├── database/                      ← Database management package
+│   ├── __init__.py
+│   ├── db_manager.py              ← SQLite DB with deduplication
+│   ├── image_extractor.py         ← Extracts best gold frame from videos
+│   └── post_processor.py          ← Background thread for image extraction
+├── weights/                       ← All YOLO model files
+│   ├── Yolo11n.engine             ← Gold detection (TensorRT)
+│   ├── yolo26n-seg.onnx           ← Person segmentation (ONNX)
+│   └── ...                        ← Other model formats (.pt, .onnx)
+├── runs/
+│   ├── recordings/                ← Auto-saved .mp4 clips
+│   ├── images/                    ← Snapshots and extracted gold frames
+│   ├── jewellery_detections.db    ← SQLite database (auto-created)
+│   └── detection.log              ← Event log
+├── test_db.py                     ← Database test suite
+├── data.yaml                      ← Dataset config (Roboflow)
+├── requirements.txt
+└── ReadME.md
+```
+
+## Models
+
+| Model | Format | Purpose |
+|---|---|---|
+| `Yolo11n.engine` | TensorRT | Gold/jewellery detection (primary) |
+| `yolo26n-seg.onnx` | ONNX | Person segmentation |
+
+All models are stored in the `weights/` directory.
+
+### Detection Classes (from `data.yaml`)
+
+Bangles · Chain · Earrings · Gold Bar · Gold Coin · Ring
+
+## Database
+
+Detection events are stored in `runs/jewellery_detections.db` (SQLite, auto-created on first run).
+
+### Checking the Database
+
+**Command line:**
+```bash
+sqlite3 -header -column runs/jewellery_detections.db "SELECT * FROM gold_detections;"
+```
+
+**GUI viewer:**
+```bash
+sudo apt install sqlitebrowser
+sqlitebrowser runs/jewellery_detections.db
+```
+
+**Python:**
+```python
+from database.db_manager import JewelleryDBManager
+db = JewelleryDBManager()
+for row in db.get_all_detections():
+    print(row)
+```
+
+### Running Tests
+
+```bash
+python3 test_db.py
+# Expected output: ALL TESTS PASSED
+```
+
+## Dependencies
+
+- [PyTorch](https://pytorch.org/)
+- [Ultralytics YOLO](https://docs.ultralytics.com/)
+- [OpenCV](https://opencv.org/)
+- [EasyOCR](https://github.com/JaidedAI/EasyOCR)
+- [NumPy](https://numpy.org/)
+- SQLite3 (built-in with Python)

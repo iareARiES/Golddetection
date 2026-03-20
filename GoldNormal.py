@@ -5,6 +5,21 @@ import time
 from datetime import datetime
 import numpy as np
 import easyocr
+import logging
+
+from database.db_manager import JewelleryDBManager
+from database.image_extractor import GoldImageExtractor
+from database.post_processor import PostProcessor
+
+# ------------------- LOGGING SETUP -------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[
+        logging.FileHandler("runs/detection.log"),
+        logging.StreamHandler()
+    ]
+)
 
 
 def get_screen_resolution():
@@ -241,6 +256,13 @@ class MultiDetectorROI:
         self.last_ocr_text = "None"
         self.last_ocr_time = 0  # Timer for OCR throttling
 
+        # Database management layer
+        self.db = JewelleryDBManager()
+        self.extractor = GoldImageExtractor(gold_model_path=gold_model_path)
+        self.post_processor = PostProcessor(self.db, self.extractor)
+        self.post_processor.start_background_thread()
+        self._current_db_row_id = None  # Track current recording's DB row
+
 
     def run_ocr_on_roi(self, frame):
         """
@@ -455,6 +477,21 @@ class MultiDetectorROI:
             # Update recording start time
             if self.gold_detector.recording and not was_recording:
                 self.recording_start_time = time.time()
+
+                # --- DB: Log detection event ---
+                row_id = self.db.insert_detection(
+                    video_path=str(self.gold_detector.out_file),
+                    weight=self.last_ocr_text,
+                    captured_at=datetime.now()
+                )
+                self._current_db_row_id = row_id
+
+                # --- Save snapshot photo ---
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                snapshot_path = Path("runs/images") / f"snapshot_{ts}.jpg"
+                snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(snapshot_path), frame)
+
             elif not self.gold_detector.recording:
                 self.recording_start_time = None
 
@@ -512,13 +549,11 @@ if __name__ == "__main__":
     SCREEN_RESOLUTION = None  # Auto-detect
     
     detector = MultiDetectorROI(
-        gold_model_path="Yolo11n.engine",
-        yolo26_model_path="yolo26n-seg.onnx",
+        gold_model_path="weights/Yolo11n.engine",
+        yolo26_model_path="weights/yolo26n-seg.onnx",
         roi=(seg_x1,seg_y1,seg_x2, seg_y2),
         screen_resolution=SCREEN_RESOLUTION
     )
     detector.run()
     
 
-
-#NEW EDITED FILE
