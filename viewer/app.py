@@ -29,6 +29,34 @@ customtkinter.set_appearance_mode("System")
 customtkinter.set_default_color_theme("blue")
 
 
+def _auto_dpi_scaling():
+    """
+    Auto-detect screen DPI and scale the UI.
+    High-DPI screens (14" laptop @ 2560px) → scale up.
+    Low-res screens (Jetson 10" @ 1280px) → keep at 1.0.
+    """
+    try:
+        import tkinter as tk
+        _root = tk.Tk()
+        _root.withdraw()
+        screen_w = _root.winfo_screenwidth()
+        _root.destroy()
+    except Exception:
+        return
+
+    # Scale relative to 1920px baseline
+    # 1920px → 1.0x, 2560px → 1.33x, 3840px → 1.6x, 1280px → 1.0x
+    if screen_w > 1920:
+        scale = min(screen_w / 1920, 1.6)
+    else:
+        scale = 1.0
+
+    customtkinter.set_widget_scaling(scale)
+    customtkinter.set_window_scaling(scale)
+
+_auto_dpi_scaling()
+
+
 class App(customtkinter.CTk):
     def __init__(self):
         super().__init__()

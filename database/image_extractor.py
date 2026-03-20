@@ -53,6 +53,7 @@ class GoldImageExtractor:
 
             best_frame = None
             best_conf = 0.0
+            best_box = None  # Track the gold bounding box (x1, y1, x2, y2)
             fallback_frame = None
 
             for idx in range(0, total_frames, step):
@@ -74,10 +75,14 @@ class GoldImageExtractor:
                 try:
                     results = self.model(frame, conf=0.2, verbose=False)[0]
                     if results.boxes is not None and len(results.boxes) > 0:
-                        max_conf = results.boxes.conf.max().item()
+                        # Find the box with highest confidence
+                        max_idx = results.boxes.conf.argmax().item()
+                        max_conf = results.boxes.conf[max_idx].item()
                         if max_conf > best_conf:
                             best_conf = max_conf
                             best_frame = frame.copy()
+                            # Store bounding box coords
+                            best_box = results.boxes.xyxy[max_idx].cpu().numpy().astype(int)
                 except Exception as e:
                     logger.error("Frame extraction inference error: %s", e)
                     continue
@@ -88,7 +93,6 @@ class GoldImageExtractor:
                     best_frame = fallback_frame
                     logger.info("Using fallback frame at 30%% for %s", video_path)
                 else:
-                    # Last resort: read the very first frame
                     cap.set(cv2.CAP_PROP_POS_FRAMES, int(total_frames * 0.3))
                     ret, frame = cap.read()
                     if ret:
@@ -97,6 +101,20 @@ class GoldImageExtractor:
                     else:
                         logger.error("Frame extraction failed: no readable frames in %s", video_path)
                         return None
+
+            # Crop to gold bounding box if we have one
+            if best_box is not None:
+                h, w = best_frame.shape[:2]
+                bx1, by1, bx2, by2 = best_box
+                # Add 10% padding around the gold piece
+                pad_x = int((bx2 - bx1) * 0.10)
+                pad_y = int((by2 - by1) * 0.10)
+                bx1 = max(0, bx1 - pad_x)
+                by1 = max(0, by1 - pad_y)
+                bx2 = min(w, bx2 + pad_x)
+                by2 = min(h, by2 + pad_y)
+                best_frame = best_frame[by1:by2, bx1:bx2]
+                logger.info("Cropped to gold region: %dx%d", bx2 - bx1, by2 - by1)
 
             # Save
             stem = Path(video_path).stem
