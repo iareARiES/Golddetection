@@ -1,17 +1,17 @@
 """
-Gold Detection Viewer — Standalone GUI application.
+Gold Detection Viewer -- Standalone GUI application.
 
 Run:
     python3 viewer/app.py
 
-Reads from runs/jewellery_detections.db (created by GoldNormal.py).
+Reads from runs/gold.db (created by GoldNormal.py).
 Can run simultaneously alongside the detection process.
+Supports retrying failed/pending post-processing events.
 """
 
 import sys
 from pathlib import Path
 
-# Ensure project root is on sys.path so `viewer.*` imports work
 project_root = str(Path(__file__).parent.parent)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
@@ -30,11 +30,6 @@ customtkinter.set_default_color_theme("blue")
 
 
 def _auto_dpi_scaling():
-    """
-    Auto-detect screen DPI and scale the UI.
-    High-DPI screens (14" laptop @ 2560px) → scale up.
-    Low-res screens (Jetson 10" @ 1280px) → keep at 1.0.
-    """
     try:
         import tkinter as tk
         _root = tk.Tk()
@@ -44,8 +39,6 @@ def _auto_dpi_scaling():
     except Exception:
         return
 
-    # Scale relative to 1920px baseline
-    # 1920px → 1.0x, 2560px → 1.33x, 3840px → 1.6x, 1280px → 1.0x
     if screen_w > 1920:
         scale = min(screen_w / 1920, 1.6)
     else:
@@ -62,97 +55,86 @@ class App(customtkinter.CTk):
         super().__init__()
         self.title("Gold Detection Viewer")
 
-        # --- Auto-detect screen size and scale to 80% ---
         screen_w = self.winfo_screenwidth()
         screen_h = self.winfo_screenheight()
-        win_w = int(screen_w * 0.80)
-        win_h = int(screen_h * 0.80)
-        # Clamp to reasonable minimum
-        win_w = max(win_w, 900)
-        win_h = max(win_h, 560)
-        # Center on screen
+        win_w = max(int(screen_w * 0.80), 900)
+        win_h = max(int(screen_h * 0.80), 560)
         x = (screen_w - win_w) // 2
         y = (screen_h - win_h) // 2
         self.geometry(f"{win_w}x{win_h}+{x}+{y}")
         self.minsize(900, 560)
 
-        # Scale sidebar and detail panel widths based on screen
         self._sidebar_width = max(180, int(win_w * 0.16))
-        self._detail_width = max(240, int(win_w * 0.22))
+        self._detail_width  = max(240, int(win_w * 0.22))
 
         self.db = DetectionReader()
         self.current_filter = "all"
         self.current_search = ""
-        self.selected_unique_id = None
+        self.selected_row_id = None
 
         self._build_layout()
         self._refresh()
         self._schedule_auto_refresh()
 
     def _build_layout(self):
-        """Create sidebar, main frame (topbar + table), detail panel side by side."""
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # --- Sidebar (left) ---
-        self.sidebar = Sidebar(self, on_nav_change=self._on_nav_change, width=self._sidebar_width)
+        self.sidebar = Sidebar(self, on_nav_change=self._on_nav_change,
+                               width=self._sidebar_width)
         self.sidebar.grid(row=0, column=0, sticky="nsw")
 
-        # --- Main area (center) ---
         main_frame = customtkinter.CTkFrame(self, fg_color="transparent", corner_radius=0)
         main_frame.grid(row=0, column=1, sticky="nsew")
         main_frame.grid_columnconfigure(0, weight=1)
         main_frame.grid_rowconfigure(1, weight=1)
 
-        self.topbar = Topbar(main_frame, on_search=self._on_search, on_refresh=self._refresh)
+        self.topbar = Topbar(main_frame, on_search=self._on_search,
+                             on_refresh=self._refresh)
         self.topbar.grid(row=0, column=0, sticky="ew")
 
         self.table = TableView(main_frame, on_row_select=self._on_row_select)
         self.table.grid(row=1, column=0, sticky="nsew", padx=(0, 0))
 
-        # --- Detail panel (right) ---
-        self.detail_panel = DetailPanel(self, width=self._detail_width)
+        self.detail_panel = DetailPanel(self, on_retry=self._on_retry,
+                                        width=self._detail_width)
         self.detail_panel.grid(row=0, column=2, sticky="nse")
 
     def _refresh(self):
-        """Re-read DB with current filter + search. Update all widgets."""
-        # Get data
         if self.current_search.strip():
             records = self.db.search(self.current_search)
-            title_text = f"Search results — {len(records)} record{'s' if len(records) != 1 else ''}"
+            title_text = f"Search results -- {len(records)} record{'s' if len(records) != 1 else ''}"
         else:
             records = self.db.get_all(self.current_filter)
             filter_names = {
-                "all": "All detections",
-                "pending": "Pending extraction",
-                "today": "Today's detections",
+                "all":         "All detections",
+                "today":       "Today's detections",
+                "pending":     "Pending processing",
+                "done":        "Completed",
+                "failed":      "Failed processing",
                 "with_weight": "Detections with weight",
-                "duplicates": "Duplicates",
             }
             name = filter_names.get(self.current_filter, "All detections")
-            title_text = f"{name} — {len(records)} record{'s' if len(records) != 1 else ''}"
+            title_text = f"{name} -- {len(records)} record{'s' if len(records) != 1 else ''}"
 
-        # Update widgets
         stats = self.db.get_stats()
         self.sidebar.update_stats(stats)
         self.topbar.set_title(title_text)
         self.table.load_data(records)
 
-        # Preserve selected row
-        if self.selected_unique_id:
+        if self.selected_row_id:
             found = False
             for r in records:
-                if r.get("unique_id") == self.selected_unique_id:
+                if r.get("id") == self.selected_row_id:
                     self.table.selected_id = r.get("id")
                     self.detail_panel.load_record(r)
                     found = True
                     break
             if not found:
-                self.selected_unique_id = None
+                self.selected_row_id = None
                 self.detail_panel.clear()
 
     def _schedule_auto_refresh(self):
-        """Auto-refresh every 5 seconds."""
         self._refresh()
         self.after(5000, self._schedule_auto_refresh)
 
@@ -167,8 +149,14 @@ class App(customtkinter.CTk):
         self._refresh()
 
     def _on_row_select(self, record: dict):
-        self.selected_unique_id = record.get("unique_id")
+        self.selected_row_id = record.get("id")
         self.detail_panel.load_record(record)
+
+    def _on_retry(self, event_id: str):
+        """Reset a failed/pending event so the next GoldNormal.py run picks it up."""
+        if event_id:
+            self.db.reset_to_pending(event_id)
+            self._refresh()
 
 
 if __name__ == "__main__":

@@ -1,51 +1,41 @@
-2026-03-20 19:20:53,635 [INFO] database.post_processor: Post-processor background thread started
-2026-03-20 19:21:19,209 [WARNING] database.db_manager: OCR weight unreadable, using 'unknown'
-2026-03-20 19:21:19,220 [INFO] database.db_manager: New detection inserted: 20260320_192119_unknown (row 1)
-2026-03-20 19:21:23,638 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
-2026-03-20 19:21:23,764 [ERROR] database.image_extractor: Failed to open video: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192118.mp4
-2026-03-20 19:21:23,765 [WARNING] database.post_processor: No image extracted for row 1: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192118.mp4
-2026-03-20 19:21:33,713 [WARNING] database.db_manager: OCR weight unreadable, using 'unknown'
-2026-03-20 19:21:33,724 [INFO] database.db_manager: New detection inserted: 20260320_192133_unknown (row 2)
-2026-03-20 19:21:38,765 [INFO] database.post_processor: Post-processor: 2 pending video(s) to process
-2026-03-20 19:21:41,679 [INFO] database.image_extractor: Cropped to gold region: 520x456
-2026-03-20 19:21:41,688 [INFO] database.image_extractor: Image extraction complete: runs/images/gold_detected_20260320_192118_gold.jpg (conf=0.73)
-2026-03-20 19:21:41,716 [INFO] database.db_manager: Image path updated for row 1: /home/staunch/Desktop/Golddetection/runs/images/gold_detected_20260320_192118_gold.jpg
-2026-03-20 19:21:41,741 [ERROR] database.image_extractor: Failed to open video: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192133.mp4
-2026-03-20 19:21:41,741 [WARNING] database.post_processor: No image extracted for row 2: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192133.mp4
-2026-03-20 19:21:56,742 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
-2026-03-20 19:21:59,486 [INFO] database.image_extractor: Cropped to gold region: 57x68
-2026-03-20 19:21:59,487 [INFO] database.image_extractor: Image extraction complete: runs/images/gold_detected_20260320_192133_gold.jpg (conf=0.69)
-2026-03-20 19:21:59,501 [INFO] database.db_manager: Image path updated for row 2: /home/staunch/Desktop/Golddetection/runs/images/gold_detected_20260320_192133_gold.jpg
-2026-03-20 19:22:06,810 [WARNING] database.db_manager: OCR weight unreadable, using 'unknown'
-2026-03-20 19:22:06,820 [INFO] database.db_manager: New detection inserted: 20260320_192206_unknown (row 3)
-2026-03-20 19:22:14,502 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
-2026-03-20 19:22:14,538 [ERROR] database.image_extractor: Failed to open video: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192206.mp4
-2026-03-20 19:22:14,538 [WARNING] database.post_processor: No image extracted for row 3: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192206.mp4
-2026-03-20 19:22:29,539 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
-2026-03-20 19:22:31,843 [INFO] database.image_extractor: Cropped to gold region: 220x165
-2026-03-20 19:22:31,844 [INFO] database.image_extractor: Image extraction complete: runs/images/gold_detected_20260320_192206_gold.jpg (conf=0.88)
-2026-03-20 19:22:31,859 [INFO] database.db_manager: Image path updated for row 3: /home/staunch/Desktop/Golddetection/runs/images/gold_detected_20260320_192206_gold.jpg
-2026-03-20 19:22:52,973 [WARNING] database.db_manager: OCR weight unreadable, using 'unknown'
-2026-03-20 19:22:52,983 [INFO] database.db_manager: New detection inserted: 20260320_192252_unknown (row 4)
-2026-03-20 19:23:01,860 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
-2026-03-20 19:23:01,910 [ERROR] database.image_extractor: Failed to open video: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192252.mp4
-2026-03-20 19:23:01,910 [WARNING] database.post_processor: No image extracted for row 4: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192252.mp4
-2026-03-20 19:23:16,911 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
-2026-03-20 19:23:16,925 [ERROR] database.image_extractor: Failed to open video: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192252.mp4
-2026-03-20 19:23:16,926 [WARNING] database.post_processor: No image extracted for row 4: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192252.mp4
-2026-03-20 19:23:31,926 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
-2026-03-20 19:23:31,933 [ERROR] database.image_extractor: Failed to open video: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192252.mp4
-2026-03-20 19:23:31,934 [WARNING] database.post_processor: No image extracted for row 4: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192252.mp4
-2026-03-20 19:23:46,934 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
-2026-03-20 19:23:46,943 [ERROR] database.image_extractor: Failed to open video: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192252.mp4
-2026-03-20 19:23:46,943 [WARNING] database.post_processor: No image extracted for row 4: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192252.mp4
-2026-03-20 19:24:01,944 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
-2026-03-20 19:24:01,952 [ERROR] database.image_extractor: Failed to open video: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192252.mp4
-2026-03-20 19:24:01,953 [WARNING] database.post_processor: No image extracted for row 4: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192252.mp4
-2026-03-20 19:24:16,954 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
-2026-03-20 19:24:16,961 [ERROR] database.image_extractor: Failed to open video: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192252.mp4
-2026-03-20 19:24:16,961 [WARNING] database.post_processor: No image extracted for row 4: /home/staunch/Desktop/Golddetection/runs/recordings/gold_detected_20260320_192252.mp4
-2026-03-20 19:24:31,962 [INFO] database.post_processor: Post-processor: 1 pending video(s) to process
-2026-03-20 19:24:34,298 [INFO] database.image_extractor: Cropped to gold region: 594x534
-2026-03-20 19:24:34,303 [INFO] database.image_extractor: Image extraction complete: runs/images/gold_detected_20260320_192252_gold.jpg (conf=0.79)
-2026-03-20 19:24:34,343 [INFO] database.db_manager: Image path updated for row 4: /home/staunch/Desktop/Golddetection/runs/images/gold_detected_20260320_192252_gold.jpg
+2026-03-24 20:32:58,056 [INFO] GoldNormal: C270 opened (index=0).
+2026-03-24 20:32:59,575 [INFO] GoldNormal: Lenovo camera thread started.
+2026-03-24 20:32:59,588 [INFO] GoldNormal: Initialising EasyOCR...
+2026-03-24 20:33:04,170 [INFO] GoldNormal: EasyOCR ready.
+2026-03-24 20:33:04,489 [INFO] GoldNormal: Main loop running -- press Q to quit.
+2026-03-24 20:34:07,808 [INFO] GoldNormal: REC started  event=20260324_203407_141a89
+2026-03-24 20:34:08,540 [INFO] GoldNormal: Snapshots saved  C270=/home/staunch/Desktop/Golddetection/runs/images/20260324_203407_141a89_c270_crop.jpg  Lenovo=/home/staunch/Desktop/Golddetection/runs/images/20260324_203407_141a89_lenovo_frame.jpg  weight=None  conf=0.3531
+2026-03-24 20:34:14,561 [INFO] GoldNormal: OCR settled: weight=None
+2026-03-24 20:34:35,175 [INFO] GoldNormal: REC stopped  event=20260324_203407_141a89  dur=27.4s
+2026-03-24 20:34:35,191 [INFO] GoldNormal: DB row #1 written (partial)  event=20260324_203407_141a89  weight=None
+2026-03-24 20:34:39,387 [INFO] GoldNormal: Ctrl+C received -- shutting down cleanly...
+2026-03-24 20:34:39,405 [INFO] GoldNormal: Shutting down...
+2026-03-24 20:34:39,439 [INFO] GoldNormal: Done.
+2026-03-24 20:37:55,247 [INFO] GoldNormal: C270 opened (index=0).
+2026-03-24 20:37:56,742 [INFO] GoldNormal: Lenovo camera thread started.
+2026-03-24 20:37:56,750 [INFO] GoldNormal: Initialising EasyOCR...
+2026-03-24 20:38:01,320 [INFO] GoldNormal: EasyOCR ready.
+2026-03-24 20:38:01,636 [INFO] GoldNormal: Main loop running -- press Q to quit.
+2026-03-24 20:38:27,481 [INFO] GoldNormal: REC started  event=20260324_203827_cab3df
+2026-03-24 20:38:28,158 [INFO] GoldNormal: Snapshots saved  C270=/home/staunch/Desktop/Golddetection/runs/images/20260324_203827_cab3df_c270_crop.jpg  Lenovo=/home/staunch/Desktop/Golddetection/runs/images/20260324_203827_cab3df_lenovo_frame.jpg  weight=None  conf=0.3442
+2026-03-24 20:38:37,635 [INFO] GoldNormal: REC stopped  event=20260324_203827_cab3df  dur=10.2s
+2026-03-24 20:38:37,651 [INFO] GoldNormal: DB row #2 written (partial)  event=20260324_203827_cab3df  weight=None
+2026-03-24 20:38:50,336 [INFO] GoldNormal: REC started  event=20260324_203850_8e288b
+2026-03-24 20:38:50,716 [INFO] GoldNormal: Snapshots saved  C270=/home/staunch/Desktop/Golddetection/runs/images/20260324_203850_8e288b_c270_crop.jpg  Lenovo=/home/staunch/Desktop/Golddetection/runs/images/20260324_203850_8e288b_lenovo_frame.jpg  weight=None  conf=0.3549
+2026-03-24 20:38:56,268 [INFO] GoldNormal: OCR settled: weight=JQ3
+2026-03-24 20:39:22,677 [INFO] GoldNormal: REC stopped  event=20260324_203850_8e288b  dur=32.3s
+2026-03-24 20:39:22,692 [INFO] GoldNormal: DB row #3 written (done)  event=20260324_203850_8e288b  weight=JQ3
+2026-03-24 20:39:38,147 [INFO] GoldNormal: REC started  event=20260324_203938_f85ff6
+2026-03-24 20:39:38,524 [INFO] GoldNormal: Snapshots saved  C270=/home/staunch/Desktop/Golddetection/runs/images/20260324_203938_f85ff6_c270_crop.jpg  Lenovo=/home/staunch/Desktop/Golddetection/runs/images/20260324_203938_f85ff6_lenovo_frame.jpg  weight=8  conf=0.5612
+2026-03-24 20:39:44,287 [INFO] GoldNormal: OCR settled: weight=5
+2026-03-24 20:40:39,194 [INFO] GoldNormal: Ctrl+C received -- shutting down cleanly...
+2026-03-24 20:40:39,332 [INFO] GoldNormal: Shutting down...
+2026-03-24 20:40:39,334 [INFO] GoldNormal: REC stopped  event=20260324_203938_f85ff6  dur=61.2s
+2026-03-24 20:40:39,348 [INFO] GoldNormal: DB row #4 written (done)  event=20260324_203938_f85ff6  weight=5
+2026-03-24 20:40:39,371 [INFO] GoldNormal: Done.
+2026-03-24 20:46:27,804 [INFO] GoldNormal: C270 opened (index=0).
+2026-03-24 20:46:29,297 [INFO] GoldNormal: Lenovo camera thread started.
+2026-03-24 20:46:29,304 [INFO] GoldNormal: Initialising EasyOCR...
+2026-03-24 20:46:33,603 [INFO] GoldNormal: EasyOCR ready.
+2026-03-24 20:46:33,900 [INFO] GoldNormal: Main loop running -- press Q to quit.
+2026-03-24 20:46:50,362 [INFO] GoldNormal: Ctrl+C received -- shutting down cleanly...

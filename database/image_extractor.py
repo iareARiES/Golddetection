@@ -16,6 +16,25 @@ class GoldImageExtractor:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def _has_moov_atom(video_path: str) -> bool:
+        """
+        Quick binary scan for 'moov' box in an MP4 file.
+        Files without a moov atom are incomplete/corrupt and will crash
+        FFMPEG at the native level (uncatchable from Python).
+        """
+        try:
+            with open(video_path, 'rb') as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    if b'moov' in chunk:
+                        return True
+            return False
+        except Exception:
+            return False
+
     def compute_blur_score(self, frame: np.ndarray) -> float:
         """Return Laplacian variance. Higher = sharper."""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -38,7 +57,15 @@ class GoldImageExtractor:
             logger.error("Video not found for post-processing: %s", video_path)
             return None
 
-        cap = cv2.VideoCapture(video_path)
+        # Pre-validate: corrupt MP4s (no moov atom) crash FFMPEG at the
+        # native level — Python try/except cannot catch that.
+        if not self._has_moov_atom(video_path):
+            logger.error(
+                "Video is corrupt (no moov atom), skipping: %s", video_path
+            )
+            return "CORRUPT"
+
+        cap = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
         if not cap.isOpened():
             logger.error("Failed to open video: %s", video_path)
             return None

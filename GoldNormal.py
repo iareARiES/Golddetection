@@ -1,559 +1,826 @@
-from ultralytics import YOLO
+"""
+GoldNormal.py -- Dual-camera gold detection system (v2)
+========================================================
+
+Architecture:  record first, process second.
+
+Main thread (C270):
+  detect gold -> start dual recording -> stop after 10s tail ->
+  insert raw event as 'pending' -> enqueue for background processing
+
+Lenovo thread:
+  continuous read + rotate 180 -> frame buffer under lock
+
+PostProcessWorker (single daemon thread, FIFO):
+  pick pending event -> extract gold crop from C270 video ->
+  match Lenovo frame -> run OCR on clean frame -> update DB row
+
+Both cameras are mounted upside-down: rotate 180 before anything.
+"""
+
 import cv2
-from pathlib import Path
 import time
+import uuid
+import queue
+import threading
+import logging
+import sqlite3
+from pathlib import Path
 from datetime import datetime
+
+import json as _json
 import numpy as np
 import easyocr
-import logging
+from ultralytics import YOLO
 
-from database.db_manager import JewelleryDBManager
-from database.image_extractor import GoldImageExtractor
-from database.post_processor import PostProcessor
 
-# ------------------- LOGGING SETUP -------------------
+# ---------------------------------------------------------------------------
+#  LOGGING
+# ---------------------------------------------------------------------------
+Path("runs").mkdir(exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.FileHandler("runs/detection.log"),
-        logging.StreamHandler()
-    ]
+        logging.StreamHandler(),
+    ],
 )
+log = logging.getLogger("GoldNormal")
+
+# Project root (absolute) -- all paths relative to this
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 
-def get_screen_resolution():
+# ---------------------------------------------------------------------------
+#  DATABASE
+# ---------------------------------------------------------------------------
+class DB:
+    """Thread-safe SQLite wrapper with pending/done/failed workflow."""
+
+    def __init__(self, path="runs/gold.db"):
+        abs_path = str((PROJECT_ROOT / path).resolve())
+        (PROJECT_ROOT / path).parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(abs_path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self._lock = threading.Lock()
+        self._init()
+
+    def _init(self):
+        with self._lock:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS detections (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id            TEXT UNIQUE,
+                    captured_at         TEXT,
+                    duration_sec        REAL,
+
+                    c270_video_path     TEXT NOT NULL,
+                    lenovo_video_path   TEXT,
+
+                    weight              TEXT,
+                    image_c270          TEXT,
+                    image_lenovo        TEXT,
+
+                    detection_confidence REAL,
+                    bbox_json           TEXT,
+                    sync_offset_ms      INTEGER,
+
+                    processing_status   TEXT NOT NULL DEFAULT 'pending',
+                    processing_error    TEXT,
+
+                    queued_at           TEXT,
+                    processed_at        TEXT
+                )
+            """)
+            self.conn.commit()
+
+    def insert_raw_event(self, event_id, captured_at, duration_sec,
+                         c270_video_path, lenovo_video_path):
+        """Insert immediately after both writers are released."""
+        now = datetime.now().isoformat(timespec="seconds")
+        with self._lock:
+            cur = self.conn.execute(
+                """INSERT INTO detections
+                       (event_id, captured_at, duration_sec,
+                        c270_video_path, lenovo_video_path,
+                        processing_status, queued_at)
+                   VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
+                (event_id, captured_at, duration_sec,
+                 c270_video_path, lenovo_video_path, now),
+            )
+            self.conn.commit()
+            return cur.lastrowid
+
+    def update_processed(self, event_id, weight, image_c270, image_lenovo,
+                         detection_confidence=None, bbox_json=None,
+                         sync_offset_ms=None):
+        """Called by PostProcessWorker after extraction.
+        Status is 'done' if all data present, 'partial' if some missing."""
+        now = datetime.now().isoformat(timespec="seconds")
+        # Determine status: partial if any key field is missing
+        if image_c270 and weight and weight != "None":
+            status = "done"
+        else:
+            status = "partial"
+        with self._lock:
+            self.conn.execute(
+                """UPDATE detections
+                   SET weight=?, image_c270=?, image_lenovo=?,
+                       detection_confidence=?, bbox_json=?,
+                       sync_offset_ms=?,
+                       processing_status=?, processed_at=?
+                   WHERE event_id=?""",
+                (weight, image_c270, image_lenovo,
+                 detection_confidence, bbox_json, sync_offset_ms,
+                 status, now, event_id),
+            )
+            self.conn.commit()
+
+    def update_failed(self, event_id, error_msg):
+        """Called by PostProcessWorker on failure."""
+        with self._lock:
+            self.conn.execute(
+                """UPDATE detections
+                   SET processing_status='failed', processing_error=?
+                   WHERE event_id=?""",
+                (error_msg, event_id),
+            )
+            self.conn.commit()
+
+    def update_processing(self, event_id):
+        """Mark row as currently being processed."""
+        with self._lock:
+            self.conn.execute(
+                """UPDATE detections SET processing_status='processing'
+                   WHERE event_id=?""",
+                (event_id,),
+            )
+            self.conn.commit()
+
+    def get_pending_events(self):
+        """Return event_ids of rows still pending or failed (for recovery)."""
+        with self._lock:
+            rows = self.conn.execute(
+                """SELECT event_id FROM detections
+                   WHERE processing_status IN ('pending', 'failed')
+                   ORDER BY queued_at ASC"""
+            ).fetchall()
+            return [r["event_id"] for r in rows]
+
+    def get_event(self, event_id):
+        """Return a single event row as dict."""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM detections WHERE event_id=?", (event_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+#  LENOVO CAMERA  (daemon thread, passive frame buffer)
+# ---------------------------------------------------------------------------
+class LenovoCamera:
     """
-    Auto-detect screen resolution. Works on Windows, Linux, and Raspberry Pi.
-    Returns (width, height) or None if detection fails.
+    Runs in a daemon thread. Main loop never waits for it.
+    capture_latest() returns the most recent rotated frame instantly.
     """
-    # Method 1: Try tkinter (works on most systems)
-    try:
-        import tkinter as tk
-        root = tk.Tk()
-        root.withdraw()  # Hide the window
-        width = root.winfo_screenwidth()
-        height = root.winfo_screenheight()
-        root.destroy()
-        return (width, height)
-    except:
-        pass
-    
-    # Method 2: Try xrandr on Linux/RPi
-    try:
-        import subprocess
-        output = subprocess.check_output(['xrandr']).decode('utf-8')
-        for line in output.split('\n'):
-            if '*' in line:  # Current resolution has asterisk
-                resolution = line.split()[0]
-                width, height = map(int, resolution.split('x'))
-                return (width, height)
-    except:
-        pass
-    
-    # Method 3: Fallback - return None to use camera resolution
-    return None
+
+    def __init__(self, index: int = 2):
+        self.cap = cv2.VideoCapture(index)
+        self._available = self.cap.isOpened()
+        if not self._available:
+            log.warning("Lenovo cam (index=%d) unavailable.", index)
+        self._frame = None
+        self._lock  = threading.Lock()
+        self._running = False
+
+    @property
+    def available(self):
+        return self._available
+
+    def start(self):
+        if not self._available:
+            return
+        self._running = True
+        t = threading.Thread(target=self._loop, daemon=True, name="LenovoCam")
+        t.start()
+        log.info("Lenovo camera thread started.")
+
+    def _loop(self):
+        while self._running:
+            ret, frame = self.cap.read()
+            if ret:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
+                with self._lock:
+                    self._frame = frame
+            else:
+                time.sleep(0.03)
+
+    def capture_latest(self):
+        """Return a copy of the latest frame, or None."""
+        with self._lock:
+            return self._frame.copy() if self._frame is not None else None
+
+    def stop(self):
+        self._running = False
+        if self._available:
+            self.cap.release()
 
 
-def resize_for_display(frame, display_width, display_height):
-    """Resize frame to fit display dimensions while maintaining aspect ratio."""
-    h, w = frame.shape[:2]
-    scale_w = display_width / w
-    scale_h = display_height / h
-    scale = min(scale_w, scale_h)
-    new_w = int(w * scale)
-    new_h = int(h * scale)
-    return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-
-
-# ------------------- YOLO26 SEGMENTATION -------------------
+# ---------------------------------------------------------------------------
+#  PERSON SEGMENTATION  (YOLO)
+# ---------------------------------------------------------------------------
 class YOLOSegmentation:
-    def __init__(self, model_path=None, roi=None, classes=[0]):
-        """
-        Run YOLO26 segmentation on ROI.
-        classes=[0] means 'person' only.
-        """
-        self.model = YOLO(model_path)
-        self.roi = roi
-        self.classes = classes
-        
-        
-    def crop_roi(self,frame):
-        x1,y1,x2,y2 = self.roi
+    def __init__(self, model_path: str, roi: tuple, classes=None):
+        self.model   = YOLO(model_path)
+        self.roi     = roi
+        self.classes = classes or [0]
+
+    def _crop(self, frame):
+        x1, y1, x2, y2 = self.roi
         return frame[y1:y2, x1:x2]
-        
-    def convert_to_full_coords(self,box):
-        x1,y1,x2,y2 = map(int, box.xyxy[0])
-        roi_x1,roi_y1,_,_ = self.roi
-        x1 += roi_x1
-        x2 += roi_x1
-        y1 += roi_y1
-        y2 += roi_y1
-        return x1,y1,x2,y2
-        
-    def draw_detection(self,frame, coords, conf):
-        x1,y1,x2,y2 = coords
-        cv2.rectangle(frame, (x1,y1), (x2,y2), (0,255,0), 2)
-        label = f"Person {conf:.2f}"
-        cv2.putText(frame, label, (x1,y1-8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255),2)
-            
-    def predict_and_draw(self, frame, results):
-        """
-        Draw segmentation results directly on the frame at correct ROI-offset positions.
-        No resizing or pasting - draws on original frame.
-        """
-        x1_roi, y1_roi, x2_roi, y2_roi = map(int, self.roi)
-        
-        # Draw masks if available
+
+    def run(self, frame):
+        """Return raw results on the ROI crop."""
+        return self.model(self._crop(frame), classes=self.classes, conf=0.2)[0]
+
+    def draw(self, frame, results):
+        """Overlay masks + boxes on display_frame (with ROI offset)."""
+        rx, ry = self.roi[0], self.roi[1]
         if results.masks is not None:
-            for mask_points in results.masks.xy:
-                # Offset mask points by ROI position
-                contour = np.array(mask_points, dtype=np.int32)
-                contour[:, 0] += x1_roi  # Offset X
-                contour[:, 1] += y1_roi  # Offset Y
-                
-                # Draw filled mask with transparency
+            for pts in results.masks.xy:
+                c = np.array(pts, dtype=np.int32)
+                c[:, 0] += rx;  c[:, 1] += ry
                 overlay = frame.copy()
-                cv2.fillPoly(overlay, [contour], (0, 255, 0))
+                cv2.fillPoly(overlay, [c], (0, 255, 0))
                 cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
-                
-                # Draw mask outline
-                cv2.polylines(frame, [contour], True, (0, 255, 0), 2)
-        
-        # Draw boxes if available
+                cv2.polylines(frame, [c], True, (0, 255, 0), 2)
         if results.boxes is not None:
             for box in results.boxes:
                 bx1, by1, bx2, by2 = map(int, box.xyxy[0])
-                # Offset by ROI position
-                bx1 += x1_roi
-                bx2 += x1_roi
-                by1 += y1_roi
-                by2 += y1_roi
-                
-                conf = box.conf.item()
+                bx1 += rx; bx2 += rx; by1 += ry; by2 += ry
                 cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
-                label = f"Person {conf:.2f}"
-                cv2.putText(frame, label, (bx1, by1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
         return frame
 
 
+# ---------------------------------------------------------------------------
+#  GOLD DETECTOR
+# ---------------------------------------------------------------------------
+def _overlaps_person(box_coords, person_masks, roi):
+    """Pixel-level check: True if gold box overlaps any person mask."""
+    if not person_masks:
+        return False
+    x1, y1, x2, y2 = box_coords
+    rx1, ry1, rx2, ry2 = roi
+    w, h = rx2 - rx1, ry2 - ry1
+
+    person_bin = np.zeros((h, w), dtype=np.uint8)
+    for pts in person_masks:
+        cv2.fillPoly(person_bin, [np.array(pts, dtype=np.int32)], 255)
+
+    box_mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.rectangle(
+        box_mask,
+        (max(x1 - rx1, 0),     max(y1 - ry1, 0)),
+        (min(x2 - rx1, w - 1), min(y2 - ry1, h - 1)),
+        255, -1,
+    )
+    return bool(np.any(cv2.bitwise_and(person_bin, box_mask)))
 
 
-
-
-
-# ------------------- GOLD DETECTOR LAYER-------------------
-class GoldDetectorROI:
-    def __init__(self, model_path=None, roi=None):
-        """
-        Initialize the detector.
-        :param model_path: path to YOLO weights
-        :param webcam_index: webcam ID
-        :param roi: tuple of (x1, y1, x2, y2) defining the region of interest
-        """
+class GoldDetector:
+    def __init__(self, model_path: str, roi: tuple):
         self.model = YOLO(model_path)
-        self.roi = roi  # ROI as (x1, y1, x2, y2)
-        
-        #Recording attributes
-        self.recording = False
-        self.writer = None
-        self.last_detection_time = 0
-        self.out_file = None
-        self.out_dir = Path("runs/recordings")
-        self.out_dir.mkdir(parents = True, exist_ok = True)
-        self.fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        
+        self.roi   = roi
 
-    def crop_roi(self, frame):
-        """Crop the ROI from the frame."""
-        x1, y1, x2, y2 = self.roi
-        return frame[y1:y2, x1:x2] #returns the cropped frame
-
-    def convert_to_full_coords(self, box):
-        """Convert ROI-relative box coordinates to full frame coordinates.""" 
+    def _full_coords(self, box):
         x1, y1, x2, y2 = map(int, box.xyxy[0])
-        roi_x1, roi_y1, _, _ = self.roi
-        x1 += roi_x1
-        x2 += roi_x1
-        y1 += roi_y1
-        y2 += roi_y1
-        return x1, y1, x2, y2
+        rx, ry = self.roi[0], self.roi[1]
+        return x1 + rx, y1 + ry, x2 + rx, y2 + ry
 
-
-    def draw_detection(self, frame, coords, conf):
-        """Draw detection box and label on frame."""
-        x1, y1, x2, y2 = coords
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        label = f"Gold Detected {conf:.2f}"
-        cv2.putText(frame, label, (x1, y1 - 8),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-    
-    def predict_and_draw(self, frame):
+    def detect(self, frame, person_masks):
         """
-        Run gold detection on ROI, draw results on frame,
-        and handle recording logic. Returns frame + gold_detected flag.
+        Run inference on clean_frame ROI, filter person overlaps.
+        Returns list of (x1,y1,x2,y2) in full-frame coords.
+        Does NOT draw anything.
         """
-        roi_frame = self.crop_roi(frame)
-        results = self.model(roi_frame, conf = 0.2)[0]
-        
-        gold_detected = False
+        x1r, y1r, x2r, y2r = self.roi
+        results = self.model(frame[y1r:y2r, x1r:x2r], conf=0.2)[0]
+
+        valid = []
         for box in results.boxes:
-            coords = self.convert_to_full_coords(box)
-            conf = box.conf.item()
-            self.draw_detection(frame,coords,conf)
-            gold_detected = True
-        
-        return frame, gold_detected
-    
-    
-    def handle_recording(self, frame, gold_detected):
-        """
-        Start/stop recording if gold is detected.
-        """
-        current_time = time.time()
-        if gold_detected:
-            self.last_detection_time = current_time
-            if not self.recording:
-                h, w = frame.shape[:2]
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                self.out_file = self.out_dir / f"gold_detected_{ts}.mp4"
-                self.writer = cv2.VideoWriter(str(self.out_file), self.fourcc, 20.0, (w, h))
-                self.recording = True
-                print(f"Recording started: {self.out_file}")
+            coords = self._full_coords(box)
+            if _overlaps_person(coords, person_masks, self.roi):
+                continue
+            valid.append(coords)
+        return valid
 
-        if self.recording and (current_time - self.last_detection_time) > 10:
-            if self.writer is not None:
-                self.writer.release()
-            self.writer = None
-            self.recording = False
-
-        if self.recording and self.writer is not None:
-            self.writer.write(frame)    
-        
-
-
-class MultiDetectorROI:
-    def __init__(self, gold_model_path=None, yolo26_model_path=None, roi=None, screen_resolution=None):
-        self.cap = cv2.VideoCapture(0)
-        self.roi = roi
-        self.gold_detector = GoldDetectorROI(
-            model_path=gold_model_path,
-            roi=roi
-        )
-        self.seg_detector = YOLOSegmentation(yolo26_model_path, roi)
-        # Screen resolution for display scaling (width, height)
-        # If None, will auto-detect from first frame
-        self.screen_resolution = screen_resolution
-        try:
-            print("Initializing EasyOCR (this may take a moment)...")
-            self.ocr = easyocr.Reader(['en'], gpu=True)
-            print("EasyOCR ready!")
-        except Exception as e:
-            print(f"Warning: OCR initialization failed: {e}")
-            self.ocr = None
-        self.last_ocr_text = "None"
-        self.last_ocr_time = 0  # Timer for OCR throttling
-
-        # Database management layer
-        self.db = JewelleryDBManager()
-        self.extractor = GoldImageExtractor(gold_model_path=gold_model_path)
-        self.post_processor = PostProcessor(self.db, self.extractor)
-        self.post_processor.start_background_thread()
-        self._current_db_row_id = None  # Track current recording's DB row
-
-
-    def run_ocr_on_roi(self, frame):
-        """
-        Runs OCR only inside ROI and returns detected number/text.
-        """
-        if self.ocr is None:
-            return "OCR unavailable"
-        
-        try:
-            x1, y1, x2, y2 = self.roi
-            roi_frame = frame[y1:y2, x1:x2]
-            results = self.ocr.readtext(roi_frame)
-
-            detected_text = []
-
-            if results:
-                for (bbox, text, conf) in results:
-                    # Keep only text containing digits
-                    if any(char.isdigit() for char in text):
-                        detected_text.append(text)
-                
-            if detected_text:
-                return detected_text[0]  # First match
-            else:
-                return "None"
-        except Exception as e:
-            print(f"OCR error: {e}")
-            return "OCR error"
-
-        
-
-    #overlap solution
-    def box_overlaps_mask(self, box_coords, person_masks, roi):
-        """
-        True overlap check using binary mask intersection.
-        """
-        if person_masks is None:
-            return False
-
-        x1, y1, x2, y2 = box_coords
-        roi_x1, roi_y1, roi_x2, roi_y2 = roi
-
-        roi_w = roi_x2 - roi_x1
-        roi_h = roi_y2 - roi_y1
-
-        # Create empty person mask image
-        person_binary = np.zeros((roi_h, roi_w), dtype=np.uint8)
-
-        # Draw each person contour
-        for mask_points in person_masks:
-            contour = np.array(mask_points, dtype=np.int32)
-            cv2.fillPoly(person_binary, [contour], 255)
-
-        # Create gold box mask (ROI-relative)
-        box_mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
-
-        bx1 = x1 - roi_x1
-        by1 = y1 - roi_y1
-        bx2 = x2 - roi_x1
-        by2 = y2 - roi_y1
-
-        cv2.rectangle(box_mask, (bx1, by1), (bx2, by2), 255, -1)
-
-        # Intersection
-        overlap = cv2.bitwise_and(person_binary, box_mask)
-
-        # If any overlap pixels exist → reject
-        return np.any(overlap)
-
-
-        
-    def resize_with_aspect_ratio(self, frame, target_width, target_height):
-        """
-        Resize frame to fit within target dimensions while maintaining aspect ratio.
-        """
-        h, w = frame.shape[:2]
-        
-        # Calculate scaling factor to fit within target dimensions
-        scale_w = target_width / w
-        scale_h = target_height / h
-        scale = min(scale_w, scale_h)  # Use smaller scale to fit both dimensions
-        
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        
-        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-        return resized
-    
-    def draw_status_panel(self, frame, gold_detected):
-        """
-        Draw status labels on the right side of the frame.
-        Shows: Gold Detected (Yes/No), Recording (Yes/No), Recording Duration
-        """
-        h, w = frame.shape[:2]
-        
-        # Panel settings
-        panel_width = 200
-        panel_x = w - panel_width - 10
-        start_y = 30
-        line_height = 35
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.6
-        thickness = 2
-        
-        # Gold Detection Status
-        gold_text = "Gold: YES" if gold_detected else "Gold: NO"
-        ocr_text = f"Weight: {self.last_ocr_text}"
-        cv2.putText(frame, ocr_text,
-                    (panel_x, start_y + 3 * line_height),
-                    font, font_scale,
-                    (255, 255, 0), thickness)
-        
-        gold_color = (0, 255, 0) if gold_detected else (0, 0, 255)
-        cv2.putText(frame, gold_text, (panel_x, start_y), font, font_scale, gold_color, thickness)
-        
-        # Recording Status
-        is_recording = self.gold_detector.recording
-        rec_text = "Recording: YES" if is_recording else "Recording: NO"
-        rec_color = (0, 255, 0) if is_recording else (0, 0, 255)
-        cv2.putText(frame, rec_text, (panel_x, start_y + line_height), font, font_scale, rec_color, thickness)
-        
-        # Recording Duration
-        if is_recording and self.recording_start_time is not None:
-            duration = time.time() - self.recording_start_time
-            minutes = int(duration // 60)
-            seconds = int(duration % 60)
-            duration_text = f"Duration: {minutes:02d}:{seconds:02d}"
-        else:
-            duration_text = "Duration: 00:00"
-        cv2.putText(frame, duration_text, (panel_x, start_y + 2 * line_height), font, font_scale, (255, 255, 255), thickness)
-        
+    @staticmethod
+    def draw_boxes(frame, gold_list):
+        """Draw gold boxes on a display_frame copy only."""
+        for cx1, cy1, cx2, cy2 in gold_list:
+            cv2.rectangle(frame, (cx1, cy1), (cx2, cy2), (0, 255, 0), 2)
         return frame
-    
-    def run(self):
-        # Track recording start time
-        self.recording_start_time = None
-        
-        # Read first frame to get camera dimensions
-        ret, first_frame = self.cap.read()
-        if not ret:
-            print("Error: Could not read from camera")
-            return
-        
-        cam_height, cam_width = first_frame.shape[:2]
-        print(f"Camera resolution: {cam_width}x{cam_height}")
-        
-        # ---------------- OpenCV window setup ----------------
-        window_name = "Gold + YOLO26 Detection (ROI)"
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)  # allow resizing
-        
-        # Auto-detect screen resolution
-        screen_res = get_screen_resolution()
-        if screen_res:
-            screen_width, screen_height = screen_res
-            print(f"Auto-detected screen: {screen_width}x{screen_height}")
+
+
+# ---------------------------------------------------------------------------
+#  DUAL VIDEO RECORDER  (10-second tail, two synchronized writers)
+# ---------------------------------------------------------------------------
+class DualVideoRecorder:
+    TAIL_SECS = 10
+
+    def __init__(self, out_dir: str = "runs/recordings"):
+        self.out_dir = (PROJECT_ROOT / out_dir).resolve()
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        self._fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+
+        # active event state
+        self._c270_writer   = None
+        self._lenovo_writer = None
+        self._event_id      = None
+        self._captured_at   = None
+        self._t0            = 0.0
+        self._last_gold_t   = 0.0
+        self.recording      = False
+
+    @property
+    def event_id(self):
+        return self._event_id
+
+    @property
+    def c270_path(self):
+        return str(self.out_dir / f"{self._event_id}_c270.mp4") if self._event_id else None
+
+    @property
+    def lenovo_path(self):
+        return str(self.out_dir / f"{self._event_id}_lenovo.mp4") if self._event_id else None
+
+    def feed(self, c270_frame, lenovo_frame, gold_detected, gold_list=None):
+        """
+        Feed both camera frames each loop iteration.
+
+        Returns
+        -------
+        recording     bool
+        just_stopped  bool
+        completed     dict | None   -- event info when recording just ended
+        """
+        now = time.time()
+
+        if gold_detected:
+            self._last_gold_t = now
+            if not self.recording:
+                self._start(c270_frame, lenovo_frame)
+
+        just_stopped = False
+        completed    = None
+
+        if self.recording:
+            # Draw green gold boxes on the recorded C270 video
+            rec_frame = c270_frame.copy()
+            if gold_list:
+                for (x1, y1, x2, y2) in gold_list:
+                    cv2.rectangle(rec_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            self._c270_writer.write(rec_frame)
+            if self._lenovo_writer is not None and lenovo_frame is not None:
+                self._lenovo_writer.write(lenovo_frame)
+
+            tail_expired = (not gold_detected and
+                            (now - self._last_gold_t) > self.TAIL_SECS)
+            if tail_expired:
+                completed = self._stop()
+                just_stopped = True
+
+        return self.recording, just_stopped, completed
+
+    def force_stop(self):
+        """Call on shutdown. Returns completed event dict or None."""
+        if self.recording:
+            return self._stop()
+        return None
+
+    def _start(self, c270_frame, lenovo_frame):
+        self._event_id   = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+        self._captured_at = datetime.now().isoformat(timespec="seconds")
+        self._t0          = time.time()
+
+        # C270 writer
+        h, w = c270_frame.shape[:2]
+        self._c270_writer = cv2.VideoWriter(
+            self.c270_path, self._fourcc, 20.0, (w, h),
+        )
+
+        # Lenovo writer (if frame available)
+        if lenovo_frame is not None:
+            lh, lw = lenovo_frame.shape[:2]
+            self._lenovo_writer = cv2.VideoWriter(
+                self.lenovo_path, self._fourcc, 20.0, (lw, lh),
+            )
         else:
-            # fallback to camera frame size
-            screen_width, screen_height = cam_width, cam_height
-            print(f"Using camera resolution: {screen_width}x{screen_height}")
-        
-        # Calculate scale to fit screen (preserve aspect ratio)
-        scale_w = screen_width / cam_width
-        scale_h = screen_height / cam_height
-        scale = min(scale_w, scale_h)
-        
-        display_width = int(cam_width * scale)
-        display_height = int(cam_height * scale)
-        print(f"Display size: {display_width}x{display_height}")
-        
-        # Set OpenCV window size
-        cv2.resizeWindow(window_name, display_width, display_height)
-        
-        while True:
+            self._lenovo_writer = None
+
+        self.recording = True
+        log.info("REC started  event=%s", self._event_id)
+
+    def _stop(self):
+        duration = time.time() - self._t0
+
+        if self._c270_writer:
+            self._c270_writer.release()
+            self._c270_writer = None
+        lenovo_path = None
+        if self._lenovo_writer:
+            self._lenovo_writer.release()
+            self._lenovo_writer = None
+            lenovo_path = self.lenovo_path
+
+        self.recording = False
+        log.info("REC stopped  event=%s  dur=%.1fs", self._event_id, duration)
+
+        completed = {
+            "event_id":          self._event_id,
+            "captured_at":       self._captured_at,
+            "duration_sec":      round(duration, 1),
+            "c270_video_path":   self.c270_path,
+            "lenovo_video_path": lenovo_path,
+        }
+        self._event_id = None
+        return completed
+
+# ---------------------------------------------------------------------------
+#  OCR  (weight reader)
+# ---------------------------------------------------------------------------
+class OCRReader:
+    def __init__(self, roi: tuple):
+        self.roi = roi
+        log.info("Initialising EasyOCR...")
+        try:
+            self.reader = easyocr.Reader(["en"], gpu=True)
+            log.info("EasyOCR ready.")
+        except Exception as exc:
+            log.warning("EasyOCR init failed: %s", exc)
+            self.reader = None
+
+    def read(self, frame) -> str:
+        """Return first digit-containing string found in ROI, else 'None'."""
+        if self.reader is None:
+            return "None"
+        x1, y1, x2, y2 = self.roi
+        try:
+            for _, text, _ in self.reader.readtext(frame[y1:y2, x1:x2]):
+                if any(ch.isdigit() for ch in text):
+                    return text
+        except Exception as exc:
+            log.warning("OCR error: %s", exc)
+        return "None"
+
+
+# ---------------------------------------------------------------------------
+#  UTILITIES
+# ---------------------------------------------------------------------------
+def get_screen_resolution():
+    try:
+        import tkinter as tk
+        r = tk.Tk(); r.withdraw()
+        res = r.winfo_screenwidth(), r.winfo_screenheight()
+        r.destroy();  return res
+    except Exception:
+        pass
+    try:
+        import subprocess
+        for line in subprocess.check_output(["xrandr"]).decode().splitlines():
+            if "*" in line:
+                w, h = map(int, line.split()[0].split("x"))
+                return w, h
+    except Exception:
+        pass
+    return None
+
+
+def resize_fit(frame, max_w, max_h):
+    h, w = frame.shape[:2]
+    scale = min(max_w / w, max_h / h)
+    return cv2.resize(frame, (int(w * scale), int(h * scale)),
+                      interpolation=cv2.INTER_LINEAR)
+
+
+def draw_hud(frame, gold_detected, recording, rec_start,
+             last_weight, save_flash):
+    """Draw status panel on display_frame only."""
+    h, w = frame.shape[:2]
+    px   = w - 240
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    def put(text, y, color):
+        cv2.putText(frame, text, (px, y), font, 0.6, color, 2)
+
+    put("Gold: YES" if gold_detected else "Gold: NO",
+        30,  (0, 255, 0) if gold_detected else (0, 0, 255))
+    put("REC:  ON " if recording else "REC:  OFF",
+        65,  (0, 255, 0) if recording else (0, 0, 255))
+
+    if recording and rec_start:
+        e = int(time.time() - rec_start)
+        put(f"Dur:  {e // 60:02d}:{e % 60:02d}", 100, (255, 255, 255))
+    else:
+        put("Dur:  00:00", 100, (255, 255, 255))
+
+    wt = last_weight if last_weight != "None" else "--"
+    put(f"Wt:   {wt}", 135, (255, 255, 0))
+
+    if save_flash:
+        put("Event saved!", 170, (0, 255, 255))
+
+    return frame
+
+
+# ---------------------------------------------------------------------------
+#  MAIN SYSTEM
+# ---------------------------------------------------------------------------
+class DualCameraSystem:
+    """
+    Orchestrates C270 (detection) + Lenovo (context) with
+    dual recording. Snapshots and OCR captured inline.
+    """
+
+    FLASH_SECS = 2.0
+
+    def __init__(
+        self,
+        gold_model_path: str,
+        seg_model_path:  str,
+        roi:             tuple,
+        c270_index:      int = 0,
+        lenovo_index:    int = 2,
+    ):
+        self.roi = roi
+
+        # -- cameras --
+        self.cap = cv2.VideoCapture(c270_index)
+        if not self.cap.isOpened():
+            raise RuntimeError(f"Cannot open C270 (index={c270_index})")
+        log.info("C270 opened (index=%d).", c270_index)
+
+        self.lenovo = LenovoCamera(lenovo_index)
+        self.lenovo.start()
+
+        # -- detection models (main thread) --
+        self.seg  = YOLOSegmentation(seg_model_path, roi)
+        self.gold = GoldDetector(gold_model_path, roi)
+        self.ocr  = OCRReader(roi)
+
+        # -- subsystems --
+        self.recorder = DualVideoRecorder()
+        self.db       = DB()
+
+        # -- per-event state --
+        self._rec_start      = None
+        self._prev_recording = False
+        self._save_flash_t   = 0.0
+        self._last_ocr_t     = 0.0
+        self._last_weight    = "None"
+        self._stop           = False
+
+        # Snapshot data captured when gold first appears
+        self._pending          = None
+        self._ocr_settle_start = 0.0
+        self._ocr_settled      = False
+
+        Path(PROJECT_ROOT / "runs" / "images").mkdir(parents=True, exist_ok=True)
+
+    # -- inline helpers ---
+    def _save_snapshot(self, frame, prefix, event_id, crop_box=None):
+        """Save a frame (optionally cropped to gold box) and return absolute path."""
+        path = str(PROJECT_ROOT / "runs" / "images" / f"{event_id}_{prefix}.jpg")
+        if crop_box:
+            x1, y1, x2, y2 = crop_box
+            h, w = frame.shape[:2]
+            px1, py1 = max(0, x1 - 20), max(0, y1 - 20)
+            px2, py2 = min(w, x2 + 20), min(h, y2 + 20)
+            cv2.imwrite(path, frame[py1:py2, px1:px2])
+        else:
+            cv2.imwrite(path, frame)
+        return path
+
+    def _union_box(self, gold_list):
+        """Compute union bounding rectangle of all gold boxes."""
+        if not gold_list:
+            return None
+        x1 = min(b[0] for b in gold_list)
+        y1 = min(b[1] for b in gold_list)
+        x2 = max(b[2] for b in gold_list)
+        y2 = max(b[3] for b in gold_list)
+        return (x1, y1, x2, y2)
+
+    def _on_gold_first_seen(self, clean_frame, gold_list, event_id):
+        """
+        Called once when gold first appears. Captures snapshots + OCR
+        using the already-loaded models. No background worker needed.
+        """
+        ts = datetime.now().isoformat(timespec="seconds")
+
+        # C270 gold crop (union of all valid gold boxes)
+        union = self._union_box(gold_list)
+        img_c270 = self._save_snapshot(clean_frame, "c270_crop", event_id, crop_box=union)
+
+        # Best confidence from gold_list
+        # (gold_list only has coords; re-run on ROI to get confidence)
+        best_conf = None
+        bbox_dict = None
+        if union:
+            bbox_dict = {"x1": union[0], "y1": union[1],
+                         "x2": union[2], "y2": union[3]}
+            # Get confidence from last detect call
+            x1r, y1r, x2r, y2r = self.roi
+            results = self.gold.model(clean_frame[y1r:y2r, x1r:x2r], conf=0.2, verbose=False)[0]
+            if results.boxes is not None and len(results.boxes) > 0:
+                best_conf = max(box.conf.item() for box in results.boxes)
+                best_conf = round(best_conf, 4)
+
+        # Lenovo frame
+        lenovo_frm = self.lenovo.capture_latest()
+        img_lenovo = self._save_snapshot(lenovo_frm, "lenovo_frame", event_id) \
+            if lenovo_frm is not None else None
+
+        # OCR weight -- initial read; will be updated after 5s settle
+        weight = self.ocr.read(clean_frame)
+
+        self._pending = {
+            "captured_at":          ts,
+            "weight":               weight,
+            "image_c270":           img_c270,
+            "image_lenovo":         img_lenovo,
+            "detection_confidence": best_conf,
+            "bbox_json":            _json.dumps(bbox_dict) if bbox_dict else None,
+        }
+        # Start 5-second OCR settle timer
+        self._ocr_settle_start = time.time()
+        self._ocr_settled      = False
+        log.info("Snapshots saved  C270=%s  Lenovo=%s  weight=%s  conf=%s",
+                 img_c270, img_lenovo, weight, best_conf)
+
+    def _on_recording_done(self, completed):
+        """
+        Called after both writers are released.
+        Writes the complete DB row in one shot.
+        """
+        if self._pending is None:
+            log.warning("Recording done but no pending data -- writing raw row.")
+            row_id = self.db.insert_raw_event(**completed)
+            log.info("DB row #%d inserted (pending) event=%s", row_id, completed["event_id"])
+            self._save_flash_t = time.time()
+            return
+
+        ev = self._pending
+
+        # First insert the raw event
+        row_id = self.db.insert_raw_event(**completed)
+
+        # Determine status
+        if ev["image_c270"] and ev["weight"] and ev["weight"] != "None":
+            status = "done"
+        else:
+            status = "partial"
+
+        # Then immediately update with the inline-captured data
+        self.db.update_processed(
+            completed["event_id"],
+            weight=ev["weight"],
+            image_c270=ev["image_c270"],
+            image_lenovo=ev["image_lenovo"],
+            detection_confidence=ev["detection_confidence"],
+            bbox_json=ev["bbox_json"],
+            sync_offset_ms=0,  # inline capture = same moment
+        )
+
+        log.info("DB row #%d written (%s)  event=%s  weight=%s",
+                 row_id, status, completed["event_id"], ev["weight"])
+
+        self._pending      = None
+        self._save_flash_t = time.time()
+
+    # -- main loop --
+    def run(self):
+        win = "Gold Detection"
+        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+        res = get_screen_resolution()
+        disp_w, disp_h = res if res else (1280, 720)
+        cv2.resizeWindow(win, disp_w, disp_h)
+
+        log.info("Main loop running -- press Q to quit.")
+
+        while not self._stop:
             ret, frame = self.cap.read()
             if not ret:
-                break
+                log.warning("C270 read failed -- retrying...")
+                time.sleep(0.03)
+                continue
 
-            # Draw ROI rectangle
-            x1, y1, x2, y2 = self.roi
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            # -- 1. rotate 180 --
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
 
-            # ---- SEGMENTATION ONCE ----
-            roi_frame = self.seg_detector.crop_roi(frame)
-            seg_results = self.seg_detector.model(
-                roi_frame,
-                classes=self.seg_detector.classes,
-                conf=0.2
-            )[0]
+            # -- 2. clean_frame = unannotated source of truth --
+            clean_frame = frame.copy()
 
+            # -- 3. person segmentation (runs on clean_frame) --
+            seg_results  = self.seg.run(clean_frame)
             person_masks = seg_results.masks.xy if seg_results.masks else None
 
-            # Draw segmentation
-            frame = self.seg_detector.predict_and_draw(frame, seg_results)
+            # -- 4. gold detection (on clean_frame, returns coords only) --
+            gold_list     = self.gold.detect(clean_frame, person_masks)
+            gold_detected = len(gold_list) > 0
 
-            # Save a clean copy of the frame for OCR BEFORE drawing detections
-            ocr_frame = frame.copy()
+            # -- 5. get latest Lenovo frame --
+            lenovo_frame = self.lenovo.capture_latest()
 
-            # ---- GOLD FILTERING ----
-            frame, gold_detected = self.detect_gold_filtered(frame, person_masks)
+            # -- 6. dual recording (writes clean frames only) --
+            recording, just_stopped, completed = self.recorder.feed(
+                clean_frame, lenovo_frame, gold_detected, gold_list
+            )
 
-            # Run OCR every 1 second when gold is detected
-            # Use the clean frame copy to avoid reading drawn labels
-            current_time = time.time()
-            if gold_detected and (current_time - self.last_ocr_time) >= 1.0:
-                self.last_ocr_time = current_time
-                self.last_ocr_text = self.run_ocr_on_roi(ocr_frame)
-            
-            # Track recording start time
-            was_recording = self.gold_detector.recording
-            self.gold_detector.handle_recording(frame, gold_detected)
-            
-            # Update recording start time
-            if self.gold_detector.recording and not was_recording:
-                self.recording_start_time = time.time()
+            # -- 7. handle state transitions --
+            if recording and not self._prev_recording:
+                # Gold just appeared -> first frame of recording
+                self._rec_start = time.time()
+                event_id = self.recorder.event_id
+                self._on_gold_first_seen(clean_frame, gold_list, event_id)
 
-                # --- DB: Log detection event ---
-                row_id = self.db.insert_detection(
-                    video_path=str(self.gold_detector.out_file),
-                    weight=self.last_ocr_text,
-                    captured_at=datetime.now()
-                )
-                self._current_db_row_id = row_id
+            elif not recording and self._prev_recording:
+                self._rec_start = None
 
-                # --- Save snapshot photo ---
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                snapshot_path = Path("runs/images") / f"snapshot_{ts}.jpg"
-                snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-                cv2.imwrite(str(snapshot_path), frame)
+            if just_stopped and completed:
+                self._on_recording_done(completed)
 
-            elif not self.gold_detector.recording:
-                self.recording_start_time = None
+            self._prev_recording = recording
 
-            # Draw status panel on the right
-            frame = self.draw_status_panel(frame, gold_detected)
-            
-            # Resize and display
-            display_frame = resize_for_display(frame, display_width, display_height)
-            cv2.imshow(window_name, display_frame)
+            # -- 8. OCR update while gold visible (5-second settle) --
+            now = time.time()
+            if gold_detected and self._pending and not self._ocr_settled:
+                if (now - self._last_ocr_t) >= 1.0:
+                    self._last_ocr_t = now
+                    w = self.ocr.read(clean_frame)
+                    if w != "None":
+                        self._last_weight = w
+                        self._pending["weight"] = w
 
+                # After 5 seconds, lock in the weight
+                if (now - self._ocr_settle_start) >= 5.0:
+                    self._ocr_settled = True
+                    log.info("OCR settled: weight=%s", self._pending.get("weight"))
+
+            # -- 9. display_frame = annotated copy for HUD --
+            display_frame = clean_frame.copy()
+            display_frame = self.seg.draw(display_frame, seg_results)
+            display_frame = GoldDetector.draw_boxes(display_frame, gold_list)
+
+            save_flash = (now - self._save_flash_t) < self.FLASH_SECS
+
+            display_frame = draw_hud(
+                display_frame, gold_detected, recording,
+                self._rec_start, self._last_weight, save_flash,
+            )
+
+            cv2.imshow(win, resize_fit(display_frame, disp_w, disp_h))
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
-        if self.gold_detector.writer is not None:
-            self.gold_detector.writer.release()
-            self.gold_detector.writer = None
-            self.gold_detector.recording = False
-            print("Recording safely closed.")
+
+        # -- shutdown --
+        log.info("Shutting down...")
+        completed = self.recorder.force_stop()
+        if completed:
+            self._on_recording_done(completed)
 
         self.cap.release()
+        self.lenovo.stop()
         cv2.destroyAllWindows()
+        log.info("Done.")
 
 
-    def detect_gold_filtered(self, frame, person_masks):
-        """
-        Run gold detection but filter out detections that overlap with person masks.
-        """
-        roi_frame = self.gold_detector.crop_roi(frame)
-        results = self.gold_detector.model(roi_frame, conf=0.2)[0]
-        
-        gold_detected = False
-        for box in results.boxes:
-            coords = self.gold_detector.convert_to_full_coords(box)
-            
-            # Check if this gold detection overlaps with any person
-            if self.box_overlaps_mask(coords, person_masks, self.roi):
-                continue  # Skip completely, draw nothing
-
-            
-            # Valid gold detection (not on person)
-            conf = box.conf.item()
-            self.gold_detector.draw_detection(frame, coords, conf)
-            gold_detected = True
-    
-        return frame, gold_detected
-
-# ------------------- RUN -------------------
+# ---------------------------------------------------------------------------
+#  ENTRY POINT
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    seg_x1 = 200
-    seg_y1 = 200 
-    seg_x2 = 800
-    seg_y2 = 800
-    
-    # Screen resolution - set to None for auto-detection (recommended)
-    # Or manually set, e.g., (800, 480) for RPi 7" screen
-    SCREEN_RESOLUTION = None  # Auto-detect
-    
-    detector = MultiDetectorROI(
-        gold_model_path="weights/Yolo11n.engine",
-        yolo26_model_path="weights/yolo26n-seg.onnx",
-        roi=(seg_x1,seg_y1,seg_x2, seg_y2),
-        screen_resolution=SCREEN_RESOLUTION
-    )
-    detector.run()
-    
+    import signal
 
+    ROI = (200, 200, 800, 800)
+
+    system = DualCameraSystem(
+        gold_model_path = "weights/Yolo11n.engine",
+        seg_model_path  = "weights/yolo26n-seg.onnx",
+        roi             = ROI,
+        c270_index      = 0,
+        lenovo_index    = 2,
+    )
+
+    _stop_flag = False
+    def _sigint_handler(signum, frame_arg):
+        global _stop_flag
+        if _stop_flag:
+            raise SystemExit(1)
+        log.info("Ctrl+C received -- shutting down cleanly...")
+        _stop_flag = True
+        system._stop = True
+    signal.signal(signal.SIGINT, _sigint_handler)
+
+    system.run()

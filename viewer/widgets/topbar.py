@@ -35,7 +35,7 @@ class Topbar(customtkinter.CTkFrame):
 
         # --- Refresh button ---
         self.refresh_btn = customtkinter.CTkButton(
-            self, text="⟳ Refresh", width=90, height=32,
+            self, text="Refresh", width=90, height=32,
             corner_radius=8,
             fg_color="transparent",
             border_width=1,
@@ -47,7 +47,7 @@ class Topbar(customtkinter.CTkFrame):
         self.refresh_btn.grid(row=0, column=2, padx=(4, 16), pady=12, sticky="e")
 
     def _on_search_change(self, *args):
-        """Debounced search — waits 300ms after last keystroke."""
+        """Debounced search -- waits 300ms after last keystroke."""
         if self._search_after_id is not None:
             self.after_cancel(self._search_after_id)
         self._search_after_id = self.after(300, self._fire_search)
