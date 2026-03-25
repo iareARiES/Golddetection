@@ -74,7 +74,6 @@ class App(customtkinter.CTk):
 
         self._build_layout()
         self._refresh()
-        self._schedule_auto_refresh()
 
     def _build_layout(self):
         self.grid_columnconfigure(1, weight=1)
@@ -134,9 +133,6 @@ class App(customtkinter.CTk):
                 self.selected_row_id = None
                 self.detail_panel.clear()
 
-    def _schedule_auto_refresh(self):
-        self._refresh()
-        self.after(5000, self._schedule_auto_refresh)
 
     def _on_nav_change(self, filter_mode: str):
         self.current_filter = filter_mode
