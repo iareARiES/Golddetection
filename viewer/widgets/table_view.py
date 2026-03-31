@@ -19,8 +19,8 @@ class TableView(customtkinter.CTkScrollableFrame):
     COL_DATE   = 150
     COL_WEIGHT = 80
     COL_STATUS = 90
-    COL_C270V  = 56
-    COL_LENV   = 56
+    COL_C270V  = 60
+    COL_LENV   = 60
     COL_DUR    = 60
     COL_ACT    = 50
 
@@ -93,16 +93,9 @@ class TableView(customtkinter.CTkScrollableFrame):
             font=customtkinter.CTkFont(size=10, weight="bold"),
         )
 
-    def _img_thumb(self, parent, path, width):
-        """Create a label that shows a small thumbnail of the image, or a status badge."""
-        if path and Path(path).exists() and HAS_PIL:
-            lbl = customtkinter.CTkLabel(
-                parent, text="", width=width, height=36,
-                fg_color=self.BADGE_GRAY[0], corner_radius=4, cursor="hand2",
-            )
-            lbl.bind("<Button-1>", lambda e, p=path: open_file(p))
-            self._load_thumb(path, lbl)
-            return lbl
+    def _file_badge(self, parent, path, width):
+        if path and Path(path).exists():
+            return self._badge(parent, "OK", *self.BADGE_GREEN, width)
         elif path:
             return self._badge(parent, "MISS", *self.BADGE_RED, width)
         return self._badge(parent, "-", *self.BADGE_GRAY, width)
@@ -161,13 +154,13 @@ class TableView(customtkinter.CTkScrollableFrame):
             font=customtkinter.CTkFont(size=11), anchor="w")
         durl.grid(row=0, column=4, padx=4, pady=2, sticky="w")
 
-        # C270 image thumbnail
-        c270i = self._img_thumb(row, rec.get("image_c270"), self.COL_C270V)
-        c270i.grid(row=0, column=5, padx=4, pady=2, sticky="w")
+        # C270 video
+        c270v = self._file_badge(row, rec.get("c270_video_path"), self.COL_C270V)
+        c270v.grid(row=0, column=5, padx=4, pady=6, sticky="w")
 
-        # Lenovo image thumbnail
-        leni = self._img_thumb(row, rec.get("image_lenovo"), self.COL_LENV)
-        leni.grid(row=0, column=6, padx=4, pady=2, sticky="w")
+        # Lenovo video
+        lenv = self._file_badge(row, rec.get("lenovo_video_path"), self.COL_LENV)
+        lenv.grid(row=0, column=6, padx=4, pady=6, sticky="w")
 
         # Play button
         c270_path = rec.get("c270_video_path", "")

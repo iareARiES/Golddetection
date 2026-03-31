@@ -232,26 +232,19 @@ class LenovoCamera:
 #  PERSON SEGMENTATION  (YOLO)
 # ---------------------------------------------------------------------------
 class YOLOSegmentation:
-    def __init__(self, model_path: str, roi: tuple, classes=None):
+    def __init__(self, model_path: str, classes=None):
         self.model   = YOLO(model_path)
-        self.roi     = roi
         self.classes = classes or [0]
 
-    def _crop(self, frame):
-        x1, y1, x2, y2 = self.roi
-        return frame[y1:y2, x1:x2]
-
     def run(self, frame):
-        """Return raw results on the ROI crop."""
-        return self.model(self._crop(frame), classes=self.classes, conf=0.2)[0]
+        """Return raw results on the frame."""
+        return self.model(frame, classes=self.classes, conf=0.2)[0]
 
     def draw(self, frame, results):
-        """Overlay masks + boxes on display_frame (with ROI offset)."""
-        rx, ry = self.roi[0], self.roi[1]
+        """Overlay masks + boxes on display_frame."""
         if results.masks is not None:
             for pts in results.masks.xy:
                 c = np.array(pts, dtype=np.int32)
-                c[:, 0] += rx;  c[:, 1] += ry
                 overlay = frame.copy()
                 cv2.fillPoly(overlay, [c], (0, 255, 0))
                 cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
@@ -259,7 +252,6 @@ class YOLOSegmentation:
         if results.boxes is not None:
             for box in results.boxes:
                 bx1, by1, bx2, by2 = map(int, box.xyxy[0])
-                bx1 += rx; bx2 += rx; by1 += ry; by2 += ry
                 cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
         return frame
 
@@ -267,13 +259,12 @@ class YOLOSegmentation:
 # ---------------------------------------------------------------------------
 #  GOLD DETECTOR
 # ---------------------------------------------------------------------------
-def _overlaps_person(box_coords, person_masks, roi):
+def _overlaps_person(box_coords, person_masks, frame_shape):
     """Pixel-level check: True if gold box overlaps any person mask."""
     if not person_masks:
         return False
     x1, y1, x2, y2 = box_coords
-    rx1, ry1, rx2, ry2 = roi
-    w, h = rx2 - rx1, ry2 - ry1
+    h, w = frame_shape[:2]
 
     person_bin = np.zeros((h, w), dtype=np.uint8)
     for pts in person_masks:
@@ -282,36 +273,29 @@ def _overlaps_person(box_coords, person_masks, roi):
     box_mask = np.zeros((h, w), dtype=np.uint8)
     cv2.rectangle(
         box_mask,
-        (max(x1 - rx1, 0),     max(y1 - ry1, 0)),
-        (min(x2 - rx1, w - 1), min(y2 - ry1, h - 1)),
+        (max(x1, 0),     max(y1, 0)),
+        (min(x2, w - 1), min(y2, h - 1)),
         255, -1,
     )
     return bool(np.any(cv2.bitwise_and(person_bin, box_mask)))
 
 
 class GoldDetector:
-    def __init__(self, model_path: str, roi: tuple):
+    def __init__(self, model_path: str):
         self.model = YOLO(model_path)
-        self.roi   = roi
-
-    def _full_coords(self, box):
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        rx, ry = self.roi[0], self.roi[1]
-        return x1 + rx, y1 + ry, x2 + rx, y2 + ry
 
     def detect(self, frame, person_masks):
         """
-        Run inference on clean_frame ROI, filter person overlaps.
+        Run inference on clean_frame, filter person overlaps.
         Returns list of (x1,y1,x2,y2) in full-frame coords.
         Does NOT draw anything.
         """
-        x1r, y1r, x2r, y2r = self.roi
-        results = self.model(frame[y1r:y2r, x1r:x2r], conf=0.2)[0]
+        results = self.model(frame, conf=0.2)[0]
 
         valid = []
         for box in results.boxes:
-            coords = self._full_coords(box)
-            if _overlaps_person(coords, person_masks, self.roi):
+            coords = tuple(map(int, box.xyxy[0]))
+            if _overlaps_person(coords, person_masks, frame.shape):
                 continue
             valid.append(coords)
         return valid
@@ -452,8 +436,7 @@ class DualVideoRecorder:
 #  OCR  (weight reader)
 # ---------------------------------------------------------------------------
 class OCRReader:
-    def __init__(self, roi: tuple):
-        self.roi = roi
+    def __init__(self):
         log.info("Initialising EasyOCR...")
         try:
             self.reader = easyocr.Reader(["en"], gpu=True)
@@ -463,12 +446,11 @@ class OCRReader:
             self.reader = None
 
     def read(self, frame) -> str:
-        """Return first digit-containing string found in ROI, else 'None'."""
+        """Return first digit-containing string found in frame, else 'None'."""
         if self.reader is None:
             return "None"
-        x1, y1, x2, y2 = self.roi
         try:
-            for _, text, _ in self.reader.readtext(frame[y1:y2, x1:x2]):
+            for _, text, _ in self.reader.readtext(frame):
                 if any(ch.isdigit() for ch in text):
                     return text
         except Exception as exc:
@@ -550,12 +532,9 @@ class DualCameraSystem:
         self,
         gold_model_path: str,
         seg_model_path:  str,
-        roi:             tuple,
         c270_index:      int = 0,
         lenovo_index:    int = 2,
     ):
-        self.roi = roi
-
         # -- cameras --
         self.cap = cv2.VideoCapture(c270_index)
         if not self.cap.isOpened():
@@ -566,9 +545,9 @@ class DualCameraSystem:
         self.lenovo.start()
 
         # -- detection models (main thread) --
-        self.seg  = YOLOSegmentation(seg_model_path, roi)
-        self.gold = GoldDetector(gold_model_path, roi)
-        self.ocr  = OCRReader(roi)
+        self.seg  = YOLOSegmentation(seg_model_path)
+        self.gold = GoldDetector(gold_model_path)
+        self.ocr  = OCRReader()
 
         # -- subsystems --
         self.recorder = DualVideoRecorder()
@@ -625,15 +604,14 @@ class DualCameraSystem:
         img_c270 = self._save_snapshot(clean_frame, "c270_crop", event_id, crop_box=union)
 
         # Best confidence from gold_list
-        # (gold_list only has coords; re-run on ROI to get confidence)
+        # (gold_list only has coords; re-run to get confidence)
         best_conf = None
         bbox_dict = None
         if union:
             bbox_dict = {"x1": union[0], "y1": union[1],
                          "x2": union[2], "y2": union[3]}
             # Get confidence from last detect call
-            x1r, y1r, x2r, y2r = self.roi
-            results = self.gold.model(clean_frame[y1r:y2r, x1r:x2r], conf=0.2, verbose=False)[0]
+            results = self.gold.model(clean_frame, conf=0.2, verbose=False)[0]
             if results.boxes is not None and len(results.boxes) > 0:
                 best_conf = max(box.conf.item() for box in results.boxes)
                 best_conf = round(best_conf, 4)
@@ -803,12 +781,9 @@ class DualCameraSystem:
 if __name__ == "__main__":
     import signal
 
-    ROI = (200, 200, 800, 800)
-
     system = DualCameraSystem(
-        gold_model_path = "weights/Yolo11n.engine",
+        gold_model_path = "weights/GoldSegmentationbest1.pt",
         seg_model_path  = "weights/yolo26n-seg.onnx",
-        roi             = ROI,
         c270_index      = 0,
         lenovo_index    = 2,
     )
